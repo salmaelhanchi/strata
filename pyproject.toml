@@ -1,0 +1,72 @@
+[project]
+name = "strata-workspace"
+version = "0.1.0"
+description = "Strata: an MCP-native, provenance-first web data sourcing engine (workspace root)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["strata-core", "strata-fetch", "strata-cli"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+strata-core = { workspace = true }
+strata-fetch = { workspace = true }
+strata-cli = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.3",
+    "pytest-socket>=0.8",
+    "pytest-httpserver>=1.1",
+    "hypothesis>=6.150",
+    "ruff>=0.15",
+    "mypy>=2.0",
+    "pre-commit>=4.0",
+]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages/strata-core/src", "packages/strata-fetch/src", "packages/strata-cli/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT", "N", "S", "BLE", "C4", "PTH"]
+ignore = [
+    "S101",   # assert is fine in tests
+    "S608",   # SQL is built from constants and validated identifiers only; values are parameters
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PT011", "PT018"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["packages/strata-core/src", "packages/strata-fetch/src", "packages/strata-cli/src"]
+packages = ["strata_core", "strata_fetch", "strata_cli"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["warcio.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# No test may reach the internet: only localhost (fake servers, Postgres) is allowed.
+addopts = "-ra --allow-unix-socket --allow-hosts=127.0.0.1,localhost,::1"
+markers = [
+    "postgres: needs a Postgres server (STRATA_TEST_PG_DSN or local initdb binaries)",
+    "ducklake: needs the DuckDB ducklake and postgres extensions",
+]
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
