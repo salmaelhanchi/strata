@@ -16,11 +16,11 @@ The crawl is pinned to `CC-MAIN-2026-43`, whose shard map already exists.
 | S11 Choose pages, not just sites | Done | targets (site, pattern, pages); site catalog; md5 selection with spares; pre-flight cost estimate; `tests/unit/test_query_budget.py` |
 | S12 Crash-resume | Done | write-ahead parts and manifests; `strata resume`; heartbeat; `STRATA_CRASH_AT`; `tests/integration/test_resume_and_gate1.py` |
 | S13 robots.txt verdicts | Done | `strata_fetch.robots`; `ops.robots_hosts`, `ops.policy_decisions`; `tests/unit/test_robots.py` |
-| S14 Raw WARC and lake files on S3 | Done locally (moto in tests); RustFS run pending (the live run used local folders) | `S3BlobStore`; DuckLake `DATA_PATH s3://`; RustFS in `deploy/docker-compose.yml` |
+| S14 Raw WARC and lake files on S3 | Done; the Gate 1 run below kept raw parts and lake files on RustFS | `S3BlobStore`; DuckLake `DATA_PATH s3://`; RustFS in `deploy/docker-compose.yml` |
 | S15 The 1,000-page run | Done live on local folders: 1,000/1,000, killed at record 400, finished | `gate1.toml`; rehearsal test (1,000 pages, kill at 40 %, run again) |
-| S16 Normalizers | Done; agreement against the live indexes pending (step 2 below) | `strata_core.normalize`; `prove` in `strata_fetch.gate` |
+| S16 Normalizers | Done; 99.4% agreement with the live indexes after two publisher format changes (below) | `strata_core.normalize`; `prove` in `strata_fetch.gate` |
 | S17 Digests and compaction | Done | digest classes in the gate; `strata lake-checkpoint --older-than` |
-| S18 Gate 1 demo and hand-off | One command, `strata gate1 run`; proof, commit and `v0.2.0` tag pending | `strata gate1 run` |
+| S18 Gate 1 demo and hand-off | Done: `strata gate1 run` passed on RustFS (README, "The real Gate 1 run") | `strata gate1 run` |
 
 ## Day 1 (2026-11-08)
 
@@ -241,6 +241,28 @@ Without the S3 block, step 2 without the crash proves today's local pages instea
 from this morning predates storage records, so a new job selects the same 1,000 pages, finds
 them all stored and makes no requests.
 
+## Gate 1 on RustFS
+
+The run that closed the gate, with Common Crawl throttling (`503 SlowDown`) throughout:
+
+- **Shard map under throttling.** 247 of 300 footers, then the job failed cleanly (0 budget). The
+  footers already read stay cached, so the next run read only the remaining 53.
+- **Bug: a robots.txt lookup error became a verdict.** Both hosts' lookups hit transient errors
+  (a 503 and a cut transfer), every candidate became `needs_review`, and a job with 0 of 1,000
+  pages said `succeeded`. Now a technical failure stops the job as failed before any page
+  request, a job short of its pages ends as stopped, and a rerun replaces its earlier robots
+  decisions (they were insert-only).
+- **Crash and resume.** Killed after record 400; the rerun rebuilt 23 rows from the manifests,
+  refunded 1 unsent reservation, reused 398 pages and fetched none twice. It then ran out of its
+  1,200-request budget at 930 pages (135 charged retries, URL-index queries repeated across the
+  failed runs). `gate1.toml` now allows 1,500; that new job fetched the last 70 pages in 73
+  requests and proved all 1,000 rows.
+- **Two publisher format changes found by the proof (70.6% agreement at first).**
+  rfc-editor.org's redesigned info pages no longer show a date, so the RFC extractor reads the
+  `citation_*` tags (title, date, authors) and falls back to the visible layout. `rfc-index.txt`
+  stopped zero-padding numbers below 1000, which dropped 82 RFCs from the oracle. Dates now agree
+  at the precision both sides have (the index dates most RFCs to the month). Result: 99.4%.
+
 ## Parking lot
 
 - DuckDB's requests are bounded in flight but not paced to 2 requests/s. Routing them through
@@ -251,3 +273,7 @@ them all stored and makes no requests.
   stored robots.txt bytes let anyone re-derive it (ADR-006, amendment).
 - A request in flight when the process dies is refunded on resume although it may have reached
   Common Crawl: at most one per in-flight slot (2).
+- Raising a stopped job's budget means a new job (the budget is part of the targets file's
+  identity). A `resume --budget N` would keep one job id across a top-up.
+- `strata report`'s byte count sums every response, DuckDB's index reads included; it is now
+  labelled "bytes downloaded". Stored bytes per job would need their own column.

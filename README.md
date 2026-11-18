@@ -2,15 +2,16 @@
 
 [![ci](https://github.com/salmaelhanchi/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/salmaelhanchi/strata/actions/workflows/ci.yml)
 
-**An MCP-native, provenance-first web data sourcing engine.** Agents plan and run polite
-acquisitions over Common Crawl, the Wayback Machine and official APIs, and every row in the
-lakehouse traces back to the capture, policy decision and parser version that produced it.
+**A Common Crawl toolkit. Before you scrape a site, ask Strata.** It tells you what a site
+contains and what its robots.txt allows, and pulls the pages you need from Common Crawl
+instead of from the site, with proof of where every row came from. It's a helper for scraping
+projects, not a scraper.
 
-> Status: **week 2 of 6, Gate 1.** One targets file turns two public documentation sites into
+> Status: **Gate 1 passed.** One targets file turns two public documentation sites into
 > 1,000 verified Common Crawl captures: a robots.txt verdict for every page, raw WARC parts and
 > lake files on an S3-compatible store, a run that survives being killed, and one query that
-> proves every row. The MCP server, gRPC scheduler, Spark jobs and Terraform arrive in later
-> weeks ([week 1](docs/progress/week-1.md), [week 2](docs/progress/week-2.md)).
+> proves every row ([progress logs](docs/progress/)). Site profiles, crawl-to-crawl diffs, export
+> into your own database, a web console and an MCP server come next.
 
 ## What works today
 
@@ -91,11 +92,67 @@ run dies, the same command continues the same job.
 To see that, set `$env:STRATA_CRASH_AT = "after_manifest:400"` first: the process exits on the
 spot after its 400th stored record. Unset it, wait a minute for the dead run's heartbeat to go
 stale, and run the command again. The same run is rehearsed in the test suite against a fake
-Common Crawl and an S3 server ([week 2 log](docs/progress/week-2.md)).
+Common Crawl and an S3 server ([progress log](docs/progress/week-2.md)).
 
-### A real run (8 November 2026)
+### The real Gate 1 run
 
-Common Crawl's CDX server was timing out that morning, so this run used the Parquet URL index
+Raw parts and lake files on RustFS, starting from an empty cache, while Common Crawl was
+throttling clients with `503 SlowDown`. What happened, in order:
+
+| Run | What happened |
+| --- | --- |
+| 1 | The URL-index shard map read 247 of 300 Parquet footers, then the job failed cleanly on repeated 503s: 0 pages, 0 budget spent. The 247 footers stay cached. |
+| 2 | Discovery found 192 PEP and 3,393 RFC candidates. Both robots.txt lookups hit transient errors, and the job wrongly reported success with 0 pages. **Fixed:** a robots.txt lookup that fails for a technical reason now fails the job, and a job short of its pages ends as stopped. |
+| 3 | `STRATA_CRASH_AT=after_manifest:400`: the process died after its 400th durable record (2 robots.txt files, 398 pages). |
+| 4 | Same command, crash point unset. **23 rows rebuilt from the write-ahead manifests, 1 reserved request refunded (never sent), 398 pages reused, none fetched twice.** It stopped at 930/1,000 when the 1,200-request budget ran out: 135 page retries under throttling, all charged. |
+| 5 | Budget raised to 1,500 in `gate1.toml`, which makes it a new job. Discovery and robots.txt came from cache (0 requests); the job fetched the last 70 pages in 73 requests, then proved every row. |
+
+The proof printed by `strata gate1 run gate1.toml`:
+
+```text
+silver.documents: 1000 row(s); 0 page(s) without an extractor
+  pep.date         175/175   100.0%
+  pep.status       175/175   100.0%
+  pep.title        166/175   94.9%
+  rfc.date         824/825   99.9%
+  rfc.status       825/825   100.0%
+  rfc.title        818/825   99.2%
+Gate 1 for job_20261118T165613Z_12e79d85: 1000 row(s)
+  PASS  job finished: state succeeded
+  PASS  every selected page is in the lake: 1000/1000 (70 stored by this job, 930 by earlier jobs)
+  PASS  pages per target: peps.python.org 175/175, www.rfc-editor.org 825/825
+  PASS  no duplicates: 1000 rows, 1000 capture ids, 1000 URLs
+  PASS  robots verdict on every row: allowed=1000; rows without a stored robots.txt capture: 0
+  PASS  stored bytes intact (SHA-256): 1000/1000
+  PASS  index digest = WARC header digest: 1000/1000
+  PASS  robots.txt bytes intact: 1000/1000 rows, 2 robots.txt capture(s)
+  info  recomputed payload digest: match=1000
+  PASS  budget: spent 73/1500; charged attempts 73
+  PASS  normalizers agree with the official indexes: 99.4% on title, status and date (target 95%); 0 page(s) not in the index
+PASSED
+```
+
+The first proof failed at 70.6% agreement, and that was useful: rfc-editor.org's redesigned info
+pages no longer show a date (the extractor now reads their `citation_*` tags), and
+`rfc-index.txt` stopped zero-padding numbers below 1000 (82 RFCs looked missing). The
+disagreements left are the publishers' own formatting: the index hyphenates words at line wraps
+and peps.json writes code in backticks. 38.6 MB of WARC records sit on RustFS, and every row
+traces back to them:
+
+```text
+capture 586a16297c817c428c98536a77654a7d5db2c9bd886022748477d133937ff51a
+  url:            https://www.rfc-editor.org/info/rfc5885/
+  our copy:       s3://strata-raw/job_20261118T165613Z_12e79d85/part-00000.warc.gz @ 0 (+46562 B)
+  bytes intact:   yes (sha256 f16102de2fde9ee1...)
+  digests:        index sha1:TY6FR46YVXRR5OJ3YMRIN2MTREYTEPWB
+                  warc  sha1:TY6FR46YVXRR5OJ3YMRIN2MTREYTEPWB  -> index matches header: yes
+                  ours  sha1:TY6FR46YVXRR5OJ3YMRIN2MTREYTEPWB  -> recompute matches: yes
+  policy verdict: allowed (robots.txt capture 1fca4631fb03b4c1...)
+```
+
+### A real one-site run
+
+Common Crawl's CDX server was timing out at the time, so this run used the Parquet URL index
 (`--index columnar`). Discovery had been cached by an earlier `strata discover`, so the run spent
 only the 20 page fetches (`--budget 40`). Without the cache, that lookup costs 48 more requests,
 90 MB and about a minute, measured later the same day.
@@ -197,7 +254,7 @@ docs/progress/    weekly progress logs
 
 - [ADR-001: DuckLake with a Postgres catalog](docs/adr/001-table-format.md)
 - [ADR-003: Sourcing policy](docs/adr/003-sourcing-policy.md)
-- [ADR-004: Index sources and how discovery fails](docs/adr/004-index-sources.md) (amended twice in week 2)
+- [ADR-004: Index sources and how discovery fails](docs/adr/004-index-sources.md) (amended twice)
 - [ADR-005: Object storage after MinIO](docs/adr/005-object-storage.md) (RustFS)
 - [ADR-006: robots.txt verdicts](docs/adr/006-robots-verdicts.md)
 - [Common Crawl caveats and bottlenecks](docs/common-crawl.md)

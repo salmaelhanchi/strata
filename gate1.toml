@@ -1,12 +1,14 @@
-# Gate 1 (week 2): 1,000 public standards pages from one Common Crawl crawl.
-#   uv run strata gate1 run gate1.toml        then        uv run strata gate1 check JOB_ID
+# Gate 1: 1,000 public standards pages from one Common Crawl crawl.
+#   uv run strata gate1 run gate1.toml     (run it again to continue after a crash)
 #
-# Counted in CC-MAIN-2026-43 on 2026-11-08 with `strata count`: 192 PEP pages match, so 175 leaves
+# Counted in CC-MAIN-2026-43 with `strata count`: 192 PEP pages match, so 175 leaves
 # spares for pages robots.txt rules out; RFC info pages make up the rest.
 crawl = "CC-MAIN-2026-43"
 # A cap, not a target: 1,000 pages, a few dozen of DuckDB's URL-index requests, two robots.txt
-# records, and room for retries. A local rehearsal of the same run spent 1,017.
-budget = 1200
+# records, and room for retries. A local rehearsal of the same run spent 1,017. Retries are
+# charged: a live run under Common Crawl's 503 SlowDown throttling spent 1,200 on 930 pages
+# (135 page retries, URL-index queries repeated across three runs), so the cap leaves more room.
+budget = 1500
 index = "columnar"
 
 [[target]]

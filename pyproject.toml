@@ -1,7 +1,7 @@
 [project]
 name = "strata-workspace"
 version = "0.1.0"
-description = "Strata: an MCP-native, provenance-first web data sourcing engine (workspace root)"
+description = "Strata: a Common Crawl toolkit for scraping projects (workspace root)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
