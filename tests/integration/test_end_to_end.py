@@ -185,6 +185,45 @@ async def test_budget_stops_the_job_cleanly(
     assert fake.count(pages) - before == 2
 
 
+async def test_an_unreadable_robots_txt_fails_the_job_and_a_rerun_finishes_it(
+    fake: FakeCommonCrawl, ops_pool: AsyncConnectionPool, pg_dsn: str, tmp_path: Path
+) -> None:
+    """Throttling while reading robots.txt is not a verdict. Seen live: Common Crawl answered
+    503 SlowDown, every candidate counted as unresolved, and an empty job said "succeeded"."""
+    await allow_fast_localhost(ops_pool)
+    settings = make_settings(pg_dsn, fake, tmp_path)
+    robots_file = next(p for p in fake.files if "/robotstxt/" in p and p.endswith(".warc.gz"))
+    fake.fail_next[robots_file].extend([(503, {"Retry-After": "0"})] * 10)
+    pages = "/" + fake.cdx_refs[CRAWL][0].warc_filename
+    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=40)
+
+    failed = await run(settings, ops_pool, spec)
+
+    assert failed.state is JobState.FAILED
+    assert failed.stop_reason is not None and "robots.txt for example.org" in failed.stop_reason
+    assert failed.rows_written == 0
+    assert fake.count(pages) == 0  # no page requested without a verdict
+
+    fake.fail_next[robots_file].clear()
+    finished = await run(settings, ops_pool, spec)
+    assert finished.state is JobState.SUCCEEDED, finished.stop_reason
+    assert finished.rows_written == 5
+
+
+async def test_a_job_short_of_its_pages_stops_instead_of_succeeding(
+    fake: FakeCommonCrawl, ops_pool: AsyncConnectionPool, pg_dsn: str, tmp_path: Path
+) -> None:
+    await allow_fast_localhost(ops_pool)
+    settings = make_settings(pg_dsn, fake, tmp_path)
+    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=8, budget=40)  # 5 pages exist
+
+    report = await run(settings, ops_pool, spec)
+
+    assert report.state is JobState.STOPPED
+    assert report.stop_reason == "fewer pages allowed than asked for: example.org 5/8"
+    assert report.rows_written == 5
+
+
 def duckdb_requests_seen(fake: FakeCommonCrawl, subset: str | None = None) -> int:
     """Requests the fake saw from DuckDB (its User-Agent starts with "duckdb/"), optionally only
     those for one subset of the URL index ("warc" for pages, "robotstxt" for robots.txt)."""

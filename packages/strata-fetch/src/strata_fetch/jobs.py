@@ -328,6 +328,14 @@ async def _execute(
                         ),
                     )
                     run.fetch_seconds = time.monotonic() - fetch_started
+                    short = [
+                        f"{p.target.site} {len(p.selected)}/{p.target.pages}"
+                        for p in plans
+                        if len(p.selected) < p.target.pages
+                    ]
+                    if short:
+                        # Succeeded means every target got the pages it asked for.
+                        run.stop(f"fewer pages allowed than asked for: {', '.join(short)}")
         except (BudgetExhaustedError, IndexBudgetError) as exc:
             run.stop(f"budget exhausted during discovery: {exc}")
         except (IndexBlockedError, IndexQueryError, IndexUnavailableError) as exc:
@@ -374,14 +382,23 @@ async def _robots(
     spec: CrawlSpec,
     run: _Run,
 ) -> dict[str, HostRobots]:
-    """A verdict basis for every host the candidates live on, decided before any page request."""
+    """A verdict basis for every host the candidates live on, decided before any page request.
+
+    A lookup or robots.txt read that fails for a technical reason (throttling, a cut transfer)
+    is not a verdict: it stops the job as failed, before any page request, so running the same
+    command again asks once more. Only the crawl's own answer becomes a basis.
+    """
     hosts = sorted({host_of(r.url) for p in plans if p.discovery for r in p.discovery.refs})
     out: dict[str, HostRobots] = {}
     for host in hosts:
         try:
             lookup, _ = await locator.lookup(host, spec.crawl)
         except (IndexUnavailableError, IndexQueryError) as exc:
-            out[host] = HostRobots(host=host, basis="unresolved", error=f"lookup failed: {exc}")
+            run.stop(
+                f"robots.txt lookup failed for {host}: {exc}"[:400] + "; run the command again",
+                state=JobState.FAILED,
+            )
+            return out
         else:
             cid, record = None, None
             final = lookup.final
@@ -404,6 +421,13 @@ async def _robots(
                     )
                 elif record is None:
                     result = await fetch_capture(final.ref, ctx)
+                    if result.outcome in (Outcome.RETRYABLE_ERROR, Outcome.RATE_LIMITED):
+                        run.stop(
+                            f"robots.txt for {host} could not be read ({result.outcome.value}:"
+                            f" {result.error}); run the command again",
+                            state=JobState.FAILED,
+                        )
+                        return out
                     if result.capture is None or result.body is None:
                         cid = None
                     else:
