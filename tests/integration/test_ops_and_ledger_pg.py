@@ -18,6 +18,7 @@ from strata_core.models import (
     Outcome,
     PolicyVerdict,
     RequestClient,
+    Target,
 )
 from strata_core.ops import OpsStore
 
@@ -30,7 +31,9 @@ STORAGE = {"staging": "/tmp/raw", "raw": "file /tmp/raw", "lake": "duckdb /tmp/l
 
 
 def _spec(budget: int = 10) -> CrawlSpec:
-    return CrawlSpec(domain="example.org", crawl="CC-MAIN-2026-17", limit=50, budget=budget)
+    return CrawlSpec(
+        targets=[Target(site="example.org", pages=50)], crawl="CC-MAIN-2026-17", budget=budget
+    )
 
 
 async def test_migrate_is_idempotent(pg_dsn: str) -> None:

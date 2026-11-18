@@ -1,8 +1,9 @@
-"""Deterministic crash points for crash-resume tests (week 2, S12).
+"""Deterministic crash points for crash-resume tests.
 
-``STRATA_CRASH_AT=after_manifest:12`` makes the process die, with no cleanup at all, the 12th
-time it passes the ``after_manifest`` point: the same as a power cut or ``kill -9`` at exactly
-that moment. Unset (always, outside tests), a crash point costs one dictionary lookup.
+``STRATA_CRASH_AT=after_manifest:12`` (read by ``Settings.crash_at``; a job arms it when it
+starts) makes the process die, with no cleanup at all, the 12th time it passes the
+``after_manifest`` point: the same as a power cut or ``kill -9`` at exactly that moment. Unset
+(always, outside rehearsals), a crash point costs one comparison.
 
 The points, in the order a record passes them:
 
@@ -21,22 +22,25 @@ POINTS = ("after_append", "after_manifest", "after_seal", "after_insert")
 EXIT_CODE = 137  # what a shell reports for kill -9
 
 _passed: Counter[str] = Counter()
+_target: tuple[str, int] | None = None
 
 
-def _target() -> tuple[str, int] | None:
-    spec = os.environ.get("STRATA_CRASH_AT")
+def arm(spec: str | None) -> None:
+    """Set the crash point a run dies at (``name`` or ``name:nth``); ``None`` disarms."""
+    global _target
+    _passed.clear()
     if not spec:
-        return None
+        _target = None
+        return
     name, _, nth = spec.partition(":")
     if name not in POINTS:
         raise ValueError(f"STRATA_CRASH_AT={spec!r}: unknown point; use one of {', '.join(POINTS)}")
-    return name, int(nth) if nth else 1
+    _target = name, int(nth) if nth else 1
 
 
 def crashpoint(name: str) -> None:
-    target = _target()
-    if target is None or target[0] != name:
+    if _target is None or _target[0] != name:
         return
     _passed[name] += 1
-    if _passed[name] >= target[1]:
+    if _passed[name] >= _target[1]:
         os._exit(EXIT_CODE)

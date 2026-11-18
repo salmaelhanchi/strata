@@ -1,7 +1,7 @@
 """The budget ledger: a request is spent, and committed, before it is sent.
 
-This is the harness's ``take_request`` made multi-process. In week 3 the scheduler calls the same
-``reserve`` inside its lease transaction, so nothing here is rewritten.
+Every process reserves through the same table, so a scheduler can call the same ``reserve``
+inside its lease transaction without anything here being rewritten.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Ledger(Protocol):
         """Spend ``n`` requests that were already sent, as far as the caps allow.
 
         For requests nobody could ask about first: DuckDB reads the URL index with its own HTTP
-        client, so its requests are counted after the query (ADR-004 as amended in week 2).
+        client, so its requests are counted after the query (ADR-004).
         Returns how many did not fit; anything above zero means the job must stop.
         """
         ...
@@ -136,53 +136,3 @@ class PostgresLedger:
                 "SELECT host, spent, cap FROM ops.budget_ledger WHERE job_id = %s", (job_id,)
             )
             return {host: (spent, cap) for host, spent, cap in await cur.fetchall()}
-
-
-class MemoryLedger:
-    """In-process ledger with the same semantics, for unit tests and dry runs."""
-
-    def __init__(self) -> None:
-        self._rows: dict[tuple[str, str], list[int]] = {}
-
-    async def open(self, job_id: str, total_cap: int, host_caps: dict[str, int]) -> None:
-        self._rows.setdefault((job_id, JOB_TOTAL), [0, total_cap])
-        for host, cap in host_caps.items():
-            self._rows.setdefault((job_id, host), [0, cap])
-
-    async def reserve(self, job_id: str, host: str) -> bool:
-        return await self.reserve_n(job_id, host, 1)
-
-    async def reserve_n(self, job_id: str, host: str, n: int) -> bool:
-        keys = [(job_id, JOB_TOTAL), (job_id, host)]
-        if n <= 0:
-            return True
-        if any(k not in self._rows for k in keys):
-            return False
-        if any(self._rows[k][0] + n > self._rows[k][1] for k in keys):
-            return False
-        for k in keys:
-            self._rows[k][0] += n
-        return True
-
-    async def refund(self, job_id: str, host: str, n: int) -> int:
-        keys = [(job_id, JOB_TOTAL), (job_id, host)]
-        if n <= 0 or any(k not in self._rows for k in keys):
-            return 0
-        back = min(n, *(self._rows[k][0] for k in keys))
-        for k in keys:
-            self._rows[k][0] -= back
-        return back
-
-    async def charge(self, job_id: str, host: str, n: int) -> int:
-        keys = [(job_id, JOB_TOTAL), (job_id, host)]
-        if n <= 0:
-            return 0
-        if any(k not in self._rows for k in keys):
-            return n
-        take = max(0, min(n, *(self._rows[k][1] - self._rows[k][0] for k in keys)))
-        for k in keys:
-            self._rows[k][0] += take
-        return n - take
-
-    async def usage(self, job_id: str) -> dict[str, tuple[int, int]]:
-        return {h: (s, c) for (j, h), (s, c) in self._rows.items() if j == job_id}

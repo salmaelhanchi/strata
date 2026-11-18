@@ -137,14 +137,15 @@ def build_url_index(refs: list[CaptureRef] | list[IndexRow]) -> bytes:
             "CREATE TABLE t (url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR,"
             " url_host_registered_domain VARCHAR, fetch_time TIMESTAMPTZ, fetch_status SMALLINT,"
             " fetch_redirect VARCHAR, content_digest VARCHAR, content_mime_type VARCHAR,"
-            " warc_filename VARCHAR, warc_record_offset INTEGER, warc_record_length INTEGER)"
+            " content_languages VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER,"
+            " warc_record_length INTEGER)"
         )
         for i, row in enumerate(sorted(rows, key=lambda r: r.ref.url_surtkey or "")):
             ref = row.ref
             host = urlparse(ref.url).hostname or ""
             when = ref.fetch_time or f"2026-04-20 10:{i % 60:02d}:00+00"
             con.execute(
-                "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     ref.url_surtkey,
                     ref.url,
@@ -155,6 +156,7 @@ def build_url_index(refs: list[CaptureRef] | list[IndexRow]) -> bytes:
                     row.redirect,
                     ref.content_digest,
                     ref.mime or "text/html",
+                    "eng",
                     ref.warc_filename,
                     ref.warc_record_offset,
                     ref.warc_record_length,

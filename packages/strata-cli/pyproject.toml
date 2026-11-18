@@ -1,12 +1,13 @@
 [project]
 name = "strata-cli"
 version = "0.1.0"
-description = "Strata CLI: a thin Typer layer over the library functions"
+description = "Strata CLI: a thin Typer layer over the services"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
     "strata-core",
     "strata-fetch",
+    "strata-services",
     "typer>=0.15",
 ]
 
@@ -16,6 +17,7 @@ strata = "strata_cli.main:main"
 [tool.uv.sources]
 strata-core = { workspace = true }
 strata-fetch = { workspace = true }
+strata-services = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

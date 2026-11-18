@@ -14,8 +14,9 @@ subdomain). In ASCII ``)`` < ``*`` < ``+`` < ``,`` < ``-``, so the half-open ran
 statistics skip everything else. A range can't separate ``www.example.org`` from ``example.org``;
 callers that want one host keep its rows with ``on_site`` (or ``url_host_name`` in SQL).
 
-Week 1 kept the ``www`` and looked up ``www.rfc-editor.org`` in ``org,rfc-editor,www)``, where no
-key can be. The tests agreed, because the fake built its keys with the same function;
+An earlier version kept the ``www`` and looked up ``www.rfc-editor.org`` in
+``org,rfc-editor,www)``, where no key can be. The tests agreed, because the fake built its
+keys with the same function;
 ``tests/unit/test_surt.py`` now pins these helpers to outputs of the real library.
 """
 

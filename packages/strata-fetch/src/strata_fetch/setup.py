@@ -1,6 +1,6 @@
 """Everything a run needs in place, set up idempotently in one call.
 
-`strata migrate`, every command that writes, and (later) the Django workers call ``prepare``
+`strata migrate` and every command that writes call ``prepare``
 before touching storage, so no command depends on another having been run first.
 """
 

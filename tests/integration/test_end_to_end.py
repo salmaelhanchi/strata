@@ -1,4 +1,4 @@
-"""The week-1 walking skeleton end to end: fake Common Crawl -> Postgres ops -> raw WARC -> lake."""
+"""End to end: fake Common Crawl -> Postgres ops -> raw WARC -> lake."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from strata_core.models import (
     Outcome,
     PolicyVerdict,
     RequestClient,
+    Target,
 )
 from strata_core.ops import OpsStore
 from strata_core.settings import Settings
@@ -93,7 +94,7 @@ async def test_walking_skeleton(
     await allow_fast_localhost(ops_pool)
     settings = make_settings(pg_dsn, fake, tmp_path)
     fake.fail_next["/" + fake.cdx_refs[CRAWL][0].warc_filename].append((503, {"Retry-After": "0"}))
-    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=20)
+    spec = CrawlSpec(targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=20)
 
     report = await run(settings, ops_pool, spec)
 
@@ -138,7 +139,7 @@ async def test_rerun_is_idempotent_and_uses_the_discovery_cache(
 ) -> None:
     await allow_fast_localhost(ops_pool)
     settings = make_settings(pg_dsn, fake, tmp_path)
-    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=20)
+    spec = CrawlSpec(targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=20)
 
     first = await run(settings, ops_pool, spec)
     requests_before = len(fake.requests)
@@ -169,12 +170,16 @@ async def test_budget_stops_the_job_cleanly(
     pays for the robots.txt record and two pages; the job then stops cleanly."""
     await allow_fast_localhost(ops_pool)
     warm = make_settings(pg_dsn, fake, tmp_path / "warm")
-    await run(warm, ops_pool, CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=40))
+    await run(
+        warm,
+        ops_pool,
+        CrawlSpec(targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=40),
+    )
     pages = "/" + fake.cdx_refs[CRAWL][0].warc_filename
     before = fake.count(pages)
 
     settings = make_settings(pg_dsn, fake, tmp_path / "cold", cache_dir=warm.cache_dir)
-    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=3)
+    spec = CrawlSpec(targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=3)
     report = await run(settings, ops_pool, spec)
 
     assert report.state is JobState.STOPPED
@@ -195,7 +200,7 @@ async def test_an_unreadable_robots_txt_fails_the_job_and_a_rerun_finishes_it(
     robots_file = next(p for p in fake.files if "/robotstxt/" in p and p.endswith(".warc.gz"))
     fake.fail_next[robots_file].extend([(503, {"Retry-After": "0"})] * 10)
     pages = "/" + fake.cdx_refs[CRAWL][0].warc_filename
-    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=40)
+    spec = CrawlSpec(targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=40)
 
     failed = await run(settings, ops_pool, spec)
 
@@ -215,7 +220,9 @@ async def test_a_job_short_of_its_pages_stops_instead_of_succeeding(
 ) -> None:
     await allow_fast_localhost(ops_pool)
     settings = make_settings(pg_dsn, fake, tmp_path)
-    spec = CrawlSpec(domain="example.org", crawl=CRAWL, limit=8, budget=40)  # 5 pages exist
+    spec = CrawlSpec(
+        targets=[Target(site="example.org", pages=8)], crawl=CRAWL, budget=40
+    )  # 5 pages exist
 
     report = await run(settings, ops_pool, spec)
 
@@ -237,12 +244,15 @@ def duckdb_requests_seen(fake: FakeCommonCrawl, subset: str | None = None) -> in
 async def test_url_index_requests_are_logged_and_charged(
     fake: FakeCommonCrawl, ops_pool: AsyncConnectionPool, pg_dsn: str, tmp_path: Path
 ) -> None:
-    """Week 2, S10: DuckDB's own requests show up in the report, the attempt log and the budget."""
+    """DuckDB's own requests show up in the report, the attempt log and the budget."""
     await allow_fast_localhost(ops_pool)
     fake.add_url_index(fake.cdx_refs[CRAWL])
     settings = make_settings(pg_dsn, fake, tmp_path)
     spec = CrawlSpec(
-        domain="example.org", crawl=CRAWL, limit=5, budget=40, index=IndexChoice.COLUMNAR
+        targets=[Target(site="example.org", pages=5)],
+        crawl=CRAWL,
+        budget=40,
+        index=IndexChoice.COLUMNAR,
     )
 
     report = await run(settings, ops_pool, spec)
@@ -282,7 +292,9 @@ async def test_a_url_index_query_that_overspends_stops_before_fetching(
     first = await run(
         make_settings(pg_dsn, fake, tmp_path / "a"),
         ops_pool,
-        CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=40, index="columnar"),
+        CrawlSpec(
+            targets=[Target(site="example.org", pages=5)], crawl=CRAWL, budget=40, index="columnar"
+        ),
     )
     assert first.state is JobState.SUCCEEDED, first.stop_reason
     actual = first.index_duckdb_requests
@@ -295,7 +307,12 @@ async def test_a_url_index_query_that_overspends_stops_before_fetching(
     report = await run(
         make_settings(pg_dsn, fake, tmp_path / "b"),
         ops_pool,
-        CrawlSpec(domain="example.org", crawl=CRAWL, limit=5, budget=actual, index="columnar"),
+        CrawlSpec(
+            targets=[Target(site="example.org", pages=5)],
+            crawl=CRAWL,
+            budget=actual,
+            index="columnar",
+        ),
     )
 
     assert report.state is JobState.STOPPED

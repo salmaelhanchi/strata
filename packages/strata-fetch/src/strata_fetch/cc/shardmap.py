@@ -12,7 +12,7 @@ only the files whose range overlaps the domain's SURT range (one of 300 for pyth
 Reading a footer costs one ranged request for the last ``TAIL_BYTES`` of the file (a second one
 if the footer is larger). DuckDB then reads the statistics from a file holding only the footer.
 
-Version 2 (week 2) keeps each row group's key range, row count and the compressed size of the
+Version 2 keeps each row group's key range, row count and the compressed size of the
 columns a site query reads, so the cost of a lookup can be estimated, and reserved from a job's
 budget, before DuckDB sends a single request. Maps are kept per crawl and subset: the robots.txt
 captures (``subset=robotstxt``) have their own 300 files.
@@ -37,16 +37,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from strata_core.models import Outcome
-from strata_fetch.cc.index import (
-    MERGE_GAP,
-    CostEstimate,
+from strata_fetch.cc.attempts import (
     IndexAttempt,
     IndexBlockedError,
     IndexUnavailableError,
     OnAttempt,
-    ShardSelection,
     server_message,
 )
+from strata_fetch.cc.columnar import ShardSelection
+from strata_fetch.cc.duckdb_query import MERGE_GAP, CostEstimate
 from strata_fetch.http import (
     RETRYABLE_EXCEPTIONS,
     backoff_delay,
@@ -59,7 +58,9 @@ MAGIC = b"PAR1"
 TAIL_BYTES = 64 * 1024  # most footers fit; a larger one costs one more request
 # 3: row groups keep the byte ranges of the columns a query reads (facts), not a request count
 # derived from them, so the estimate can change without re-reading every footer.
-_MAP_VERSION = 3
+# 4: the byte range of every column, so a query that reads one more column (the site catalog's
+# content_languages) changes READ_COLUMNS only, never the cached maps again.
+_MAP_VERSION = 4
 Progress = Callable[[int, int], None]  # (footers read so far, footers to read)
 
 # The columns a site query reads (url_host_name included: the host filter needs it). Their
@@ -73,6 +74,7 @@ READ_COLUMNS: tuple[str, ...] = (
     "fetch_redirect",
     "content_digest",
     "content_mime_type",
+    "content_languages",
     "warc_filename",
     "warc_record_offset",
     "warc_record_length",
@@ -92,13 +94,16 @@ class RowGroup(BaseModel):
     min_key: str | None
     max_key: str | None
     rows: int
-    # Sorted (start, end) byte ranges of the READ_COLUMNS chunks in this row group (columns the
-    # file lacks have none). Everything the estimate needs, as read from the footer.
-    spans: list[tuple[int, int]] = []
+    # The (start, end) byte range of each column chunk in this row group, as read from the
+    # footer. Everything the estimate needs; columns the file lacks have none.
+    columns: dict[str, tuple[int, int]] = {}
 
-    @property
-    def bytes(self) -> int:
-        return sum(end - start for start, end in self.spans)
+    def spans(self, columns: Sequence[str] = READ_COLUMNS) -> list[tuple[int, int]]:
+        """Sorted byte ranges of the chunks a query reading ``columns`` downloads."""
+        return sorted(self.columns[c] for c in columns if c in self.columns)
+
+    def bytes(self, columns: Sequence[str] = READ_COLUMNS) -> int:
+        return sum(end - start for start, end in self.spans(columns))
 
     def covers(self, lo: str, hi: str) -> bool:
         if self.min_key is None or self.max_key is None:
@@ -168,8 +173,8 @@ def estimate(
         for rg in hit:
             groups += 1
             rows += rg.rows
-            requests += read_requests(rg.spans, block)
-            size += rg.bytes
+            requests += read_requests(rg.spans(), block)
+            size += rg.bytes()
     return CostEstimate(files=files, row_groups=groups, rows=rows, requests=requests, bytes=size)
 
 
@@ -345,10 +350,8 @@ async def read_footer(
     return MAGIC + data[-need:], log
 
 
-def footer_row_groups(
-    footer: bytes, key: str = "url_surtkey", columns: Sequence[str] = READ_COLUMNS
-) -> list[RowGroup]:
-    """Each row group's key range, row count and the byte ranges of ``columns``."""
+def footer_row_groups(footer: bytes, key: str = "url_surtkey") -> list[RowGroup]:
+    """Each row group's key range, row count and the byte range of every column chunk."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "footer.parquet"
         path.write_bytes(footer)
@@ -366,19 +369,17 @@ def footer_row_groups(
             ).fetchall()
         finally:
             con.close()  # before the directory goes: Windows won't delete an open file
-    wanted = set(columns)
     groups: dict[int, _Group] = {}
     for rg, n, name, lo, hi, dict_off, data_off, size in rows:
         g = groups.setdefault(rg, _Group(rows=int(n)))
         if name == key:
             g.lo = None if lo is None else str(lo)
             g.hi = None if hi is None else str(hi)
-        if name in wanted:
-            starts = [o for o in (dict_off, data_off) if o is not None and o > 0]
-            start = min(starts) if starts else 0
-            g.spans.append((start, start + int(size or 0)))
+        starts = [o for o in (dict_off, data_off) if o is not None and o > 0]
+        start = min(starts) if starts else 0
+        g.columns[str(name)] = (start, start + int(size or 0))
     return [
-        RowGroup(min_key=g.lo, max_key=g.hi, rows=g.rows, spans=sorted(g.spans))
+        RowGroup(min_key=g.lo, max_key=g.hi, rows=g.rows, columns=g.columns)
         for g in groups.values()
     ]
 
@@ -388,7 +389,7 @@ class _Group:
     rows: int
     lo: str | None = None
     hi: str | None = None
-    spans: list[tuple[int, int]] = field(default_factory=list)
+    columns: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def footer_stats(footer: bytes, column: str = "url_surtkey") -> tuple[str | None, str | None]:

@@ -3,7 +3,7 @@
 Must pass: exactly one ``response`` record, ``WARC-Target-URI`` equal to the index's URL, and
 ``WARC-Payload-Digest`` equal to the index's ``content_digest``. Also recorded, but not failed on:
 a SHA-1 recomputed over the payload, because truncation or transfer encoding can explain a
-difference (to be measured in week 2).
+difference.
 """
 
 from __future__ import annotations

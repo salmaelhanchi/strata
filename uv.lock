@@ -11,6 +11,7 @@ members = [
     "strata-cli",
     "strata-core",
     "strata-fetch",
+    "strata-services",
     "strata-workspace",
 ]
 
@@ -2138,6 +2139,7 @@ source = { editable = "packages/strata-cli" }
 dependencies = [
     { name = "strata-core" },
     { name = "strata-fetch" },
+    { name = "strata-services" },
     { name = "typer" },
 ]
 
@@ -2145,6 +2147,7 @@ dependencies = [
 requires-dist = [
     { name = "strata-core", editable = "packages/strata-core" },
     { name = "strata-fetch", editable = "packages/strata-fetch" },
+    { name = "strata-services", editable = "packages/strata-services" },
     { name = "typer", specifier = ">=0.15" },
 ]
 
@@ -2158,6 +2161,7 @@ dependencies = [
     { name = "psycopg-pool" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "structlog" },
 ]
 
 [package.metadata]
@@ -2167,6 +2171,7 @@ requires-dist = [
     { name = "psycopg-pool", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "structlog", specifier = ">=25.1" },
 ]
 
 [[package]]
@@ -2191,6 +2196,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "strata-services"
+version = "0.1.0"
+source = { editable = "packages/strata-services" }
+dependencies = [
+    { name = "strata-core" },
+    { name = "strata-fetch" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "strata-core", editable = "packages/strata-core" },
+    { name = "strata-fetch", editable = "packages/strata-fetch" },
+]
+
+[[package]]
 name = "strata-workspace"
 version = "0.1.0"
 source = { virtual = "." }
@@ -2198,6 +2218,7 @@ dependencies = [
     { name = "strata-cli" },
     { name = "strata-core" },
     { name = "strata-fetch" },
+    { name = "strata-services" },
 ]
 
 [package.dev-dependencies]
@@ -2218,6 +2239,7 @@ requires-dist = [
     { name = "strata-cli", editable = "packages/strata-cli" },
     { name = "strata-core", editable = "packages/strata-core" },
     { name = "strata-fetch", editable = "packages/strata-fetch" },
+    { name = "strata-services", editable = "packages/strata-services" },
 ]
 
 [package.metadata.requires-dev]
@@ -2231,6 +2253,15 @@ dev = [
     { name = "pytest-httpserver", specifier = ">=1.1" },
     { name = "pytest-socket", specifier = ">=0.8" },
     { name = "ruff", specifier = ">=0.15" },
+]
+
+[[package]]
+name = "structlog"
+version = "26.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/89/b4a0bcfdf4f71a3dea31379f095929613d7e4528a0996bca6aa964cd0dca/structlog-26.1.0.tar.gz", hash = "sha256:f63a716cbd1b1291cf7661de7794b455acfa4c43c5bcf1630e6ad5ddc1adb3b7", size = 1459881, upload-time = "2026-06-06T07:33:39.348Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/18/489c97b834dfff9cf2fc2507cede4bcd4b11e67f84bc462acd1992496f86/structlog-26.1.0-py3-none-any.whl", hash = "sha256:e081a26d6c373e6d201eca24eede26d8ffab07f88f477822e679183428d3d91e", size = 73764, upload-time = "2026-06-06T07:33:38.046Z" },
 ]
 
 [[package]]

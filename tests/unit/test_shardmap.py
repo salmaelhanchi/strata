@@ -11,7 +11,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from strata_core.models import Outcome
-from strata_fetch.cc.index import IndexAttempt, IndexBlockedError
+from strata_fetch.cc.attempts import IndexAttempt, IndexBlockedError
 from strata_fetch.cc.shardmap import (
     HttpTail,
     LocalTail,
@@ -223,4 +223,4 @@ async def test_a_map_from_another_format_version_is_rebuilt(
     reader = CountingTail()
     await ShardMap(reader, cache_dir=tmp_path / "cache").ranges(CRAWL, three_shards)
     assert len(reader.tails) == 3
-    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["v"] == 3
+    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["v"] == 4

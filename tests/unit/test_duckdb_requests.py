@@ -1,4 +1,4 @@
-"""Week 2, S9 and S10: counting a site's pages, and counting DuckDB's own requests.
+"""Counting a site's pages, and counting DuckDB's own requests.
 
 The HTTP tests serve Parquet files from a local threaded server and need DuckDB's httpfs
 extension. CI installs it on first use; they are skipped where it can't be loaded.
@@ -11,20 +11,14 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from strata_core.ledger import JOB_TOTAL, MemoryLedger
+from strata_core.ledger import JOB_TOTAL
 from strata_core.models import Outcome, RequestClient
-from strata_fetch.cc.index import (
-    ColumnarIndex,
-    IndexAttempt,
-    IndexQueryError,
-    IndexUnavailableError,
-    StaticShards,
-    check_pattern,
-    parse_http_status,
-    peak_in_flight,
-    spread_sample,
-)
+from strata_fetch.cc.attempts import IndexAttempt, IndexQueryError, IndexUnavailableError
+from strata_fetch.cc.catalog import spread_sample
+from strata_fetch.cc.columnar import ColumnarIndex, StaticShards
+from strata_fetch.cc.duckdb_query import check_pattern, parse_http_status, peak_in_flight
 from tests.fakecc import CRAWL
+from tests.fakes import MemoryLedger
 from tests.rangeserver import serve
 from tests.unit.test_cc_index import write_index_fixture
 
@@ -105,7 +99,7 @@ async def test_count_answers_captures_urls_and_matches(tmp_path: Path) -> None:
 async def test_a_host_finds_its_pages_though_its_registered_domain_is_wider(
     tmp_path: Path,
 ) -> None:
-    """peps.python.org's registered domain is python.org; week 1 filtered on that and missed."""
+    """peps.python.org's registered domain is python.org; filtering on it misses the site."""
     index = ColumnarIndex(StaticShards([write_index_fixture(tmp_path, rows=site_rows())]))
     refs = (await index.find("peps.example.org", CRAWL, limit=50)).refs
     hosts = {ref.url.split("/")[2] for ref in refs}
@@ -114,7 +108,7 @@ async def test_a_host_finds_its_pages_though_its_registered_domain_is_wider(
 
 
 async def test_a_www_host_is_found_under_its_parent_domains_key(tmp_path: Path) -> None:
-    """Common Crawl keys www.example.org as org,example): week 2's RFC count found 0 without it."""
+    """Common Crawl keys www.example.org as org,example): an RFC count found 0 without it."""
     rows = [
         ("org,example)/", "https://example.org/", "example.org", 200, "text/html"),
         ("org,example)/info/a", "https://www.example.org/info/a", "example.org", 200, "text/html"),
@@ -166,6 +160,7 @@ def write_big_index(root: Path) -> str:
             200::SMALLINT AS fetch_status,
             md5(i::VARCHAR) AS content_digest,
             'text/html' AS content_mime_type,
+            'eng' AS content_languages,
             'crawl-data/x/warc/f' || (i % 50) || '.warc.gz' AS warc_filename,
             i * 1000 AS warc_record_offset,
             500 + i % 300 AS warc_record_length

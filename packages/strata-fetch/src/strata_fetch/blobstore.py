@@ -29,12 +29,15 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from strata_core import logs
 from strata_core.models import BlobRef, Capture
 from strata_core.settings import Settings
 from strata_fetch.crash import crashpoint
 
 PART_SUFFIX = ".warc.gz"
 MANIFEST_SUFFIX = ".idx.jsonl"
+
+log = logs.get_logger(__name__)
 
 
 def _safe_key(key: str) -> PurePosixPath:
@@ -327,6 +330,7 @@ def seal_part(store: BlobStore, part: Part) -> None:
         store.put(part.key, part.path, part.sha256)
     manifest_key = part.key.removesuffix(PART_SUFFIX) + MANIFEST_SUFFIX
     store.put(manifest_key, part.manifest, sha256_file(part.manifest))
+    log.info("part.sealed", key=part.key, sha256=part.sha256)
     crashpoint("after_seal")
 
 

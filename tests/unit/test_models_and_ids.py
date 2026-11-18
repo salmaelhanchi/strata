@@ -49,7 +49,7 @@ def test_capture_id_is_deterministic_and_location_sensitive() -> None:
     assert a == capture_id(Source.COMMON_CRAWL, "CC-MAIN-2026-17", "crawl-data/x.warc.gz", 100)
     assert a != capture_id(Source.COMMON_CRAWL, "CC-MAIN-2026-17", "crawl-data/x.warc.gz", 101)
     assert a != capture_id(Source.COMMON_CRAWL, "CC-MAIN-2026-21", "crawl-data/x.warc.gz", 100)
-    assert a != capture_id(Source.WAYBACK, "CC-MAIN-2026-17", "crawl-data/x.warc.gz", 100)
+    assert a != capture_id(Source.OFFICIAL_API, "CC-MAIN-2026-17", "crawl-data/x.warc.gz", 100)
     assert len(a) == 64
 
 
@@ -66,7 +66,7 @@ def test_job_id_is_time_sortable() -> None:
 
 
 def test_outcome_names_match_the_protobuf_enum() -> None:
-    # Week 3 maps these mechanically to OUTCOME_<NAME>; renaming one is a breaking change.
+    # A wire format maps these mechanically to OUTCOME_<NAME>; renaming one is a breaking change.
     assert [o.name for o in Outcome] == [
         "OK",
         "DEFINITIVE_EMPTY",

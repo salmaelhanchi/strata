@@ -14,23 +14,17 @@ from pytest_httpserver import HTTPServer
 from strata_core.ledger import BudgetExhaustedError
 from strata_core.models import CaptureRef, IndexChoice, Outcome
 from strata_core.settings import Settings
-from strata_fetch.cc.index import (
-    AutoIndex,
-    CdxIndex,
-    ColumnarIndex,
-    DiscoveryResult,
+from strata_fetch.cc.attempts import (
     IndexAttempt,
     IndexBlockedError,
     IndexQueryError,
     IndexUnavailableError,
-    StaticShards,
-    cdx_filters,
-    check_filter,
-    parse_cdx_line,
-    rows_to_request,
-    select_distinct,
     server_message,
 )
+from strata_fetch.cc.catalog import select_distinct
+from strata_fetch.cc.cdx import CdxIndex, cdx_filters, check_filter, parse_cdx_line, rows_to_request
+from strata_fetch.cc.columnar import ColumnarIndex, StaticShards
+from strata_fetch.cc.index import AutoIndex, DiscoveryResult
 from strata_fetch.cc.shardmap import LocalTail, ShardMap
 from strata_fetch.cc.sources import AUTO_CDX_ATTEMPTS, make_index
 from strata_fetch.ratelimit import HostGate
@@ -426,8 +420,8 @@ INDEX_COLUMNS = (
     "url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR, url_host_registered_domain VARCHAR,"
     " fetch_time TIMESTAMPTZ,"
     " fetch_status SMALLINT, content_digest VARCHAR, content_mime_type VARCHAR,"
-    " content_mime_detected VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER,"
-    " warc_record_length INTEGER"
+    " content_mime_detected VARCHAR, content_languages VARCHAR, warc_filename VARCHAR,"
+    " warc_record_offset INTEGER, warc_record_length INTEGER"
 )
 
 ROWS = [
@@ -465,7 +459,7 @@ def write_index_fixture(
     con.execute(f"CREATE TABLE t ({columns})")
     for i, (surt, url, reg, status, mime) in enumerate(ROWS if rows is None else rows):
         con.execute(
-            "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 surt,
                 url,
@@ -477,6 +471,7 @@ def write_index_fixture(
                 f"DIGEST{i}" + "A" * 26,
                 mime,
                 mime,
+                "eng",
                 "crawl-data/x/warc/f.warc.gz",
                 1000 * i,
                 500 + i,

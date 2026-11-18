@@ -55,7 +55,7 @@ def test_ducklake_round_trip_and_idempotent_rerun(catalog_conninfo: str, tmp_pat
 def test_checkpoint_merges_flushes_and_retention_deletes_the_old_files(
     catalog_conninfo: str, tmp_path: Path
 ) -> None:
-    """S17: small bronze flushes become one file; with a retention, the merged ones go too."""
+    """Small bronze flushes become one file; with a retention, the merged ones go too."""
     data = tmp_path / "lake"
     on_disk = lambda: len(list(data.rglob("*.parquet")))  # noqa: E731
     with Lake.attach_ducklake(catalog_conninfo, data) as lake:

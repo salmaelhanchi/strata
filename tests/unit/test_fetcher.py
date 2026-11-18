@@ -11,14 +11,14 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from strata_core.ids import capture_id
-from strata_core.ledger import JOB_TOTAL, BudgetExhaustedError, MemoryLedger
+from strata_core.ledger import JOB_TOTAL, BudgetExhaustedError
 from strata_core.models import BlobRef, Outcome, Source, Verification
-from strata_core.ops import MemoryAttemptLog
 from strata_fetch.blobstore import LocalBlobStore, PartWriter
 from strata_fetch.fetcher import FetchContext, HostBlockedError, fetch_capture
 from strata_fetch.ratelimit import HostGate
 from strata_fetch.warc import verify_record
 from tests.fakecc import FakeCommonCrawl, FakeWarc, build_warc
+from tests.fakes import MemoryAttemptLog, MemoryLedger
 
 PAGES = [(f"https://example.org/p{i}", f"<html>page {i}</html>".encode() * 20) for i in range(4)]
 JOB = "job_test"

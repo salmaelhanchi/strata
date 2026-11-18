@@ -187,7 +187,7 @@ class Lake:
         for table in TABLES:
             name = f"{CATALOG}.bronze.{table}"
             self.con.execute(_CAPTURES_DDL.format(table=name))
-            # Lakes created in week 1 predate the robots link (S13).
+            # Older lakes predate the robots link (ADR-006).
             self.con.execute(
                 f"ALTER TABLE {name} ADD COLUMN IF NOT EXISTS robots_capture_id VARCHAR"
             )

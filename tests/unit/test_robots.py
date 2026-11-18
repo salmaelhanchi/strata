@@ -1,4 +1,4 @@
-"""robots.txt verdicts from Common Crawl's own captures (week 2, S13; ADR-006).
+"""robots.txt verdicts from Common Crawl's own captures (ADR-006).
 
 The lookups run against the fake Common Crawl: robots.txt records in a WARC file and rows in
 the URL index's ``robotstxt`` subset, read by DuckDB over HTTP like the real thing.

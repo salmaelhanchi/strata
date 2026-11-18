@@ -1,4 +1,4 @@
-"""robots.txt verdicts from Common Crawl's own robots.txt captures (ADR-006, week 2 S13).
+"""robots.txt verdicts from Common Crawl's own robots.txt captures (ADR-006).
 
 For each host a job takes pages from: find the newest capture of ``/robots.txt`` in the same
 crawl through the URL index's ``robotstxt`` subset, follow up to five redirects, fetch that
@@ -32,11 +32,9 @@ from protego import Protego
 from pydantic import BaseModel, ConfigDict
 
 from strata_core.models import CaptureRef, PolicyVerdict
-from strata_fetch.cc.index import (
-    IndexAttempt,
-    UrlIndexQueries,
-    _from_epoch_ms,
-)
+from strata_fetch.cc.attempts import IndexAttempt
+from strata_fetch.cc.catalog import from_epoch_ms
+from strata_fetch.cc.columnar import UrlIndexQueries
 from strata_fetch.surt import normalise_domain, url_key
 from strata_fetch.warc import read_records
 
@@ -104,7 +102,7 @@ def _newest(rows: Sequence[tuple[Any, ...]], url: str) -> RobotsCapture | None:
                 crawl=row[10],
                 url=row[0],
                 url_surtkey=row[1],
-                fetch_time=_from_epoch_ms(row[2]),
+                fetch_time=from_epoch_ms(row[2]),
                 warc_filename=row[7],
                 warc_record_offset=int(row[8]),
                 warc_record_length=int(row[9]),

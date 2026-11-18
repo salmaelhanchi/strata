@@ -1,8 +1,8 @@
-"""From stored pages to silver rows, checked against the publishers' own indexes (week 2, S16).
+"""From stored pages to silver rows, checked against the publishers' own indexes.
 
-Two throwaway extractors, one per site, read the header fields a page states. Week 3's parser
-registry replaces them; what stays is the check: every extracted value is normalized
-(``strata_core.normalize``) and compared with the publisher's machine-readable index:
+Two extractors, one per site, read the header fields a page states. The check is what matters:
+every extracted value is normalized (``strata_core.normalize``) and compared with the
+publisher's machine-readable index:
 
 * ``https://peps.python.org/api/peps.json`` for PEP pages (peps.python.org/pep-NNNN/)
 * ``https://www.rfc-editor.org/rfc-index.txt`` for RFC info pages (www.rfc-editor.org/info/rfcN/)

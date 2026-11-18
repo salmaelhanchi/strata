@@ -1,4 +1,4 @@
-"""The write-ahead log under crash-resume (S12) and the S3 store (S11, ADR-005)."""
+"""The write-ahead log under crash-resume and the S3 store (ADR-005)."""
 
 from __future__ import annotations
 

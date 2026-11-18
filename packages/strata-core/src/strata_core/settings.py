@@ -33,14 +33,16 @@ class Settings(BaseSettings):
     # default inlines up to 10 rows). Bronze flushes are small, so this saves many tiny files.
     lake_inlining_rows: int = Field(default=0, ge=0)
 
-    # Raw WARC parts are written here first (the write-ahead log of a run, ADR-005/S12), then
+    # Raw WARC parts are written here first (the write-ahead log of a run, ADR-005), then
     # sealed into the raw store: this same folder ("file") or a bucket ("s3").
     raw_root: Path = Path("data/raw")
     raw_store: Literal["file", "s3"] = "file"
     cache_dir: Path = Path("data/cache")
+    # Crash-resume rehearsals only: die at a crash point, e.g. after_manifest:12 (crash.py)
+    crash_at: str | None = None
     raw_rotate_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
 
-    # S3-compatible object store (RustFS locally, ADR-005; AWS S3 in week 5)
+    # S3-compatible object store (RustFS locally, ADR-005; any S3 API in the cloud)
     s3_endpoint: str | None = None  # e.g. http://localhost:9000; None means AWS
     s3_region: str = "us-east-1"
     s3_access_key: str | None = None
@@ -64,6 +66,9 @@ class Settings(BaseSettings):
     # A running job writes a heartbeat this often; one silent for `stale_after_s` is interrupted.
     heartbeat_s: float = Field(default=5.0, gt=0)
     stale_after_s: float = Field(default=60.0, gt=0)
+    # Logs on stderr (strata_core.logs): debug, info, warning or error; console or json lines
+    log_level: Literal["debug", "info", "warning", "error"] = "warning"
+    log_format: Literal["console", "json"] = "console"
 
     @property
     def version(self) -> str:

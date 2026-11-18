@@ -8,16 +8,10 @@ import httpx
 
 from strata_core.models import IndexChoice
 from strata_core.settings import Settings
-from strata_fetch.cc.index import (
-    AutoIndex,
-    CdxIndex,
-    ColumnarIndex,
-    IndexSource,
-    ManifestShards,
-    OnAttempt,
-    QueryBudget,
-    Reserve,
-)
+from strata_fetch.cc.attempts import OnAttempt
+from strata_fetch.cc.cdx import CdxIndex, Reserve
+from strata_fetch.cc.columnar import ColumnarIndex, ManifestShards, QueryBudget
+from strata_fetch.cc.index import AutoIndex, IndexSource
 from strata_fetch.cc.shardmap import HttpTail, Progress, ShardMap
 from strata_fetch.ratelimit import HostGate, Sleep
 from strata_fetch.robots import RobotsLocator
@@ -42,7 +36,7 @@ def make_columnar(
 
     Footer reads are paced by the data host's gate but not charged to a job's budget: the shard
     map is built once per crawl and shared by every later job (ADR-004). DuckDB's own requests
-    are reported through ``on_attempt`` after each query, and a job charges them (week 2, S10).
+    are reported through ``on_attempt`` after each query, and a job charges them.
     """
     tails = HttpTail(
         client,

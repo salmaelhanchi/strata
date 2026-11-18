@@ -1,4 +1,4 @@
-"""Normalizers (week 2, S16): properties over generated input, then the publishers' formats."""
+"""Normalizers: properties over generated input, then the publishers' formats."""
 
 from __future__ import annotations
 

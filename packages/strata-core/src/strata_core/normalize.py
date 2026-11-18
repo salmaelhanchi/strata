@@ -1,8 +1,8 @@
 """Normalizers: pure functions from the text a page shows to values that can be compared.
 
-Week 2, S16. Each function takes a string and returns a canonical value or ``None``; none of them
+Each function takes a string and returns a canonical value or ``None``; none of them
 does I/O. They are tested with Hypothesis properties (idempotence, round trips) rather than a
-handful of examples, and checked against publishers' own indexes (``strata normalize``).
+handful of examples, and checked against publishers' own indexes (``strata gate1 run``).
 """
 
 from __future__ import annotations

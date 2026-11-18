@@ -1,9 +1,9 @@
 """Core domain models.
 
-Every later contract (protobuf, MCP tool schemas, lake tables) derives from these.
+Every other contract (lake tables, API and tool schemas) derives from these.
 
-Enum *names* match the week-3 protobuf enums (``Outcome.OK`` <-> ``OUTCOME_OK``), so the
-mapping between Python and the wire is mechanical. Enum *values* are the lowercase strings
+Enum *names* are stable (``Outcome.OK`` <-> a wire format's ``OUTCOME_OK``), so mapping
+between Python and any wire format is mechanical. Enum *values* are the lowercase strings
 stored in databases.
 """
 
@@ -11,16 +11,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Source(StrEnum):
     COMMON_CRAWL = "common_crawl"
-    WAYBACK = "wayback"
     OFFICIAL_API = "official_api"  # a publisher's own index or API (for example peps.json)
-    LIVE = "live"
 
 
 class Outcome(StrEnum):
@@ -169,10 +166,7 @@ class Target(_Frozen):
 
 
 class CrawlSpec(_Frozen):
-    """What a job acquires: pages from one or more targets in one crawl, under one budget.
-
-    ``CrawlSpec(domain=..., limit=...)`` still builds a single-target spec, as in week 1.
-    """
+    """What a job acquires: pages from one or more targets in one crawl, under one budget."""
 
     source: Source = Source.COMMON_CRAWL
     crawl: str
@@ -183,17 +177,6 @@ class CrawlSpec(_Frozen):
     index: IndexChoice = IndexChoice.AUTO
     # ADR-006: pages whose host has no robots.txt capture in the crawl are left out unless set.
     allow_unknown_robots: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def _single_domain(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "domain" in data:
-            data = dict(data)
-            target = {"site": data.pop("domain"), "pages": data.pop("limit", None)}
-            if "pattern" in data:
-                target["pattern"] = data.pop("pattern")
-            data["targets"] = [target]
-        return data
 
     @property
     def domain(self) -> str:
@@ -289,7 +272,7 @@ class JobSummary(_Frozen):
 
 
 class Document(_Frozen):
-    """One silver row: the fields a page states about the document it describes (S16)."""
+    """One silver row: the fields a page states about the document it describes."""
 
     capture_id: str
     job_id: str

@@ -1,4 +1,4 @@
-"""Gate 1 (end of week 2): one command acquires the pages a targets file asks for, and one
+"""Gate 1: one command acquires the pages a targets file asks for, and one
 lineage query proves every row.
 
 The targets file is TOML::

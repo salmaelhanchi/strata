@@ -2,13 +2,18 @@
 # shown in README.md directly (they are the same `uv run ...` calls).
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
-DOMAIN ?= example.org
+DOMAIN ?= peps.python.org
 CRAWL ?= latest
-LIMIT ?= 50
-BUDGET ?= 50
+LIMIT ?= 20
+# A fresh URL-index lookup alone costs about 50 requests; the CLI's own default is 150.
+BUDGET ?= 150
 TEST_PG_DSN ?= postgresql://strata:strata@localhost:5432/strata_ops
 
-.PHONY: up down migrate lake-init check test demo clean
+.PHONY: dev up down migrate lint check test demo clean
+
+dev: up
+	uv sync
+	uv run strata migrate
 
 up:
 	$(COMPOSE) up -d --wait
@@ -19,12 +24,11 @@ down:
 migrate:
 	uv run strata migrate
 
-lake-init:
-	uv run strata lake-init
-
-check:
+lint:
 	uv run ruff check .
 	uv run ruff format --check .
+
+check: lint
 	uv run mypy
 
 test:

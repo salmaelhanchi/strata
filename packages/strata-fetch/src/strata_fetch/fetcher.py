@@ -1,4 +1,4 @@
-"""The polite WARC record fetcher (S5).
+"""The polite WARC record fetcher.
 
 For each capture: reserve budget, wait for the host's rate slot, read exactly one record by byte
 range, verify it, append the untouched bytes to our own WARC file, and only then build the bronze
@@ -28,7 +28,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from strata_core import __version__
+from strata_core import __version__, logs
 from strata_core.ids import capture_id
 from strata_core.ledger import BudgetExhaustedError, Ledger
 from strata_core.models import (
@@ -53,6 +53,7 @@ from strata_fetch.ratelimit import HostGate, Sleep
 from strata_fetch.warc import VerifiedRecord, verify_record
 
 MAX_VERIFICATION_FAILURES = 2
+log = logs.get_logger(__name__)
 
 
 class HostBlockedError(Exception):
@@ -101,6 +102,96 @@ async def _read_capped(resp: httpx.Response, cap: int) -> bytes:
     return bytes(buf[:cap])
 
 
+@dataclass(frozen=True)
+class RecordRead:
+    """One ranged read of one WARC record, classified and (when the bytes came) verified."""
+
+    outcome: Outcome
+    status: int | None = None
+    body: bytes | None = None
+    retry_after: float | None = None
+    verified: VerifiedRecord | None = None
+    error: str | None = None
+
+
+async def read_once(
+    ref: CaptureRef, url: str, client: httpx.AsyncClient, gate: HostGate
+) -> RecordRead:
+    """One attempt: wait for the host's slot, read the record's byte range, verify the bytes."""
+    status: int | None = None
+    body: bytes | None = None
+    retry_after: float | None = None
+    try:
+        async with (
+            gate.slot(),
+            client.stream("GET", url, headers={"Range": ref.range_header()}) as resp,
+        ):
+            status = resp.status_code
+            retry_after = retry_after_seconds(resp.headers.get("Retry-After"))
+            if status == 206:
+                body = await _read_capped(resp, ref.warc_record_length + 1)
+    except RETRYABLE_EXCEPTIONS as exc:
+        return RecordRead(Outcome.RETRYABLE_ERROR, error=f"{type(exc).__name__}: {exc}")
+    outcome = classify_status(status) if status is not None else Outcome.RETRYABLE_ERROR
+    if outcome is Outcome.OK and body is None:
+        return RecordRead(
+            Outcome.RETRYABLE_ERROR,
+            status,
+            None,
+            retry_after,
+            error=f"HTTP {status}: range not honoured",
+        )
+    if outcome is not Outcome.OK or body is None:
+        return RecordRead(outcome, status, None, retry_after, error=f"HTTP {status}")
+    verified = verify_record(body, ref)
+    if verified.verification is not Verification.OK:
+        error = f"verification failed: {verified.verification.value}"
+        if verified.detail:
+            error += f" ({verified.detail})"
+        return RecordRead(Outcome.RETRYABLE_ERROR, status, body, retry_after, verified, error)
+    return RecordRead(Outcome.OK, status, body, retry_after, verified)
+
+
+async def read_record(
+    ref: CaptureRef,
+    client: httpx.AsyncClient,
+    gate: HostGate,
+    *,
+    data_base: str,
+    backoff: Sequence[float],
+    take: Callable[[], bool] = lambda: True,
+    sleep: Sleep = asyncio.sleep,
+) -> tuple[RecordRead, int]:
+    """A verified record read outside a job (a profile's robots.txt), under the same rules as
+    ``fetch_capture``: the host's gate, the backoff schedule, a host pause on 429/503 and
+    ``take()`` asked before every attempt (budget before request). Nothing is stored. Returns
+    the last read and the number of attempts made."""
+    url = urljoin(data_base, ref.warc_filename)
+    read = RecordRead(Outcome.RETRYABLE_ERROR, error="no attempt made")
+    for attempt in range(1, len(backoff) + 2):
+        if not take():
+            return RecordRead(Outcome.RETRYABLE_ERROR, error="request budget spent"), attempt - 1
+        read = await read_once(ref, url, client, gate)
+        if read.outcome in (Outcome.OK, Outcome.DEFINITIVE_EMPTY, Outcome.BLOCKED):
+            return read, attempt
+        if attempt > len(backoff):
+            break
+        delay = backoff_delay(attempt, backoff, read.retry_after)
+        log.warning(
+            "record.retry",
+            url=ref.url,
+            outcome=read.outcome.value,
+            error=read.error,
+            attempt=attempt,
+            wait_s=round(delay, 2),
+        )
+        if read.outcome is Outcome.RATE_LIMITED:
+            gate.pause(delay)
+        else:
+            await sleep(delay)
+    return read, len(backoff) + 1
+
+
 async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
     url = urljoin(ctx.data_base, ref.warc_filename)
     host = urlparse(url).hostname or ""
@@ -115,37 +206,11 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
             raise BudgetExhaustedError(ctx.job_id, host)
 
         started_at, t0 = ctx.now(), time.monotonic()
-        status: int | None = None
-        body: bytes | None = None
-        retry_after: float | None = None
-        error = None
-        verified = None
-        try:
-            async with (
-                ctx.gate.slot(),
-                ctx.client.stream("GET", url, headers={"Range": ref.range_header()}) as resp,
-            ):
-                status = resp.status_code
-                retry_after = retry_after_seconds(resp.headers.get("Retry-After"))
-                if status == 206:
-                    body = await _read_capped(resp, ref.warc_record_length + 1)
-        except RETRYABLE_EXCEPTIONS as exc:
-            outcome, error = Outcome.RETRYABLE_ERROR, f"{type(exc).__name__}: {exc}"
-        else:
-            outcome = classify_status(status) if status is not None else Outcome.RETRYABLE_ERROR
-            if outcome is Outcome.OK and body is None:
-                outcome, error = Outcome.RETRYABLE_ERROR, f"HTTP {status}: range not honoured"
-            elif outcome is not Outcome.OK:
-                error = f"HTTP {status}"
-
-        if outcome is Outcome.OK and body is not None:
-            verified = verify_record(body, ref)
-            if verified.verification is not Verification.OK:
-                verification_failures += 1
-                outcome = Outcome.RETRYABLE_ERROR
-                error = f"verification failed: {verified.verification.value}"
-                if verified.detail:
-                    error += f" ({verified.detail})"
+        read = await read_once(ref, url, ctx.client, ctx.gate)
+        status, body, retry_after = read.status, read.body, read.retry_after
+        outcome, error, verified = read.outcome, read.error, read.verified
+        if verified is not None and verified.verification is not Verification.OK:
+            verification_failures += 1
 
         await ctx.attempts.record(
             Attempt(
@@ -191,6 +256,14 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
         if attempt == max_attempts:
             break
         delay = backoff_delay(attempt, ctx.backoff, retry_after)
+        log.warning(
+            "fetch.retry",
+            url=ref.url,
+            outcome=outcome.value,
+            error=error,
+            attempt=attempt,
+            wait_s=round(delay, 2),
+        )
         if outcome is Outcome.RATE_LIMITED:
             ctx.gate.pause(delay)  # every task for this host waits, not just this one
         else:

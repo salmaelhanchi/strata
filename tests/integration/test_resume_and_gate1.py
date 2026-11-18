@@ -1,4 +1,4 @@
-"""Crash-resume (week 2, S12) and a local Gate 1 rehearsal (S11-S17 together).
+"""Crash-resume and a local Gate 1 rehearsal.
 
 Each job runs as a real ``strata gate1 run`` process against the fake Common Crawl, because a
 crash has to be a real one: ``STRATA_CRASH_AT`` makes the process exit on the spot (like

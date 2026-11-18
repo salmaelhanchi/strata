@@ -1,4 +1,4 @@
-"""Paying for DuckDB's URL-index requests (week 2): estimate, reserve, run, settle.
+"""Paying for DuckDB's URL-index requests: estimate, reserve, run, settle.
 
 DuckDB can't ask the budget before each request, so a query reserves its estimate first (from
 the row-group statistics the shard map caches) and is charged or refunded the difference when it
@@ -15,12 +15,13 @@ import duckdb
 import httpx
 import pytest
 
-from strata_core.ledger import JOB_TOTAL, MemoryLedger
-from strata_fetch.cc.index import ColumnarIndex, IndexBudgetError, StaticShards
+from strata_core.ledger import JOB_TOTAL
+from strata_fetch.cc.columnar import ColumnarIndex, IndexBudgetError, StaticShards
 from strata_fetch.cc.shardmap import HttpTail, ShardMap
 from strata_fetch.jobs import LedgerBudget
 from strata_fetch.ratelimit import HostGate
 from tests.fakecc import CRAWL
+from tests.fakes import MemoryLedger
 from tests.rangeserver import serve
 from tests.unit.test_duckdb_requests import write_big_index
 
@@ -82,6 +83,7 @@ def write_cc_like_index(root: Path, rows: int) -> str:
             upper(substr(md5((i + 3)::VARCHAR), 1, 32)) AS content_digest,
             'text/html' AS content_mime_type,
             'UTF-8' AS content_charset,
+            'eng' AS content_languages,
             'crawl-data/x/warc/f-' || lpad((i % 90000)::VARCHAR, 5, '0') || '.warc.gz'
               AS warc_filename,
             (i * 7919) % 1000000000 AS warc_record_offset,

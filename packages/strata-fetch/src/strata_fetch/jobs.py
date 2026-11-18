@@ -1,13 +1,13 @@
-"""Running a Common Crawl job end to end, and resuming one that died (weeks 1 and 2).
+"""Running a Common Crawl job end to end, and resuming one that died.
 
     targets --> discovery (site catalogs, ADR-004) --> robots.txt verdicts (ADR-006)
             --> budgeted, polite fetch --> raw part + manifest (write-ahead log)
             --> seal the part into the store --> bronze rows
 
-These are library functions returning models. The CLI only prints them; in weeks 3-4 the REST and
-MCP layers wrap the same calls.
+These are library functions returning models. The CLI only prints them; the console and the MCP
+server wrap the same calls.
 
-Crash safety (S12): a record's bytes and its manifest line are fsynced before anything else
+Crash safety: a record's bytes and its manifest line are fsynced before anything else
 happens, a part is sealed into the store before its rows reach the lake, and rows are inserted
 idempotently. ``resume_cc_job`` replays what a dead run made durable, refunds reservations that
 were never sent, chooses exactly the same pages again (the catalog and robots lookups are cached;
@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from strata_core import logs
 from strata_core.ids import capture_id, new_job_id
 from strata_core.lake import Lake
 from strata_core.ledger import JOB_TOTAL, BudgetExhaustedError, Ledger
@@ -47,21 +48,22 @@ from strata_core.models import (
 from strata_core.ops import JobStore
 from strata_core.settings import Settings
 from strata_fetch.blobstore import BlobStore, PartWriter, recover, seal_part
-from strata_fetch.cc.index import (
-    DiscoveryResult,
+from strata_fetch.cc.attempts import (
     IndexAttempt,
     IndexBlockedError,
-    IndexBudgetError,
     IndexQueryError,
-    IndexSource,
     IndexUnavailableError,
     OnAttempt,
 )
+from strata_fetch.cc.columnar import IndexBudgetError
+from strata_fetch.cc.index import DiscoveryResult, IndexSource
 from strata_fetch.cc.sources import make_index, make_robots
-from strata_fetch.crash import crashpoint
+from strata_fetch.crash import arm, crashpoint
 from strata_fetch.fetcher import FetchContext, FetchResult, HostBlockedError, fetch_capture
 from strata_fetch.ratelimit import HostGate, Sleep
 from strata_fetch.robots import HostRobots, RobotsLocator, host_robots
+
+log = logs.get_logger(__name__)
 
 
 @dataclass
@@ -219,6 +221,17 @@ async def _execute(
     dropped: int = 0,
 ) -> RunReport:
     settings = svc.settings
+    arm(settings.crash_at)
+    logs.bind(job_id=job_id)
+    log.info(
+        "job.started",
+        crawl=spec.crawl,
+        targets=[t.site for t in spec.targets],
+        budget=spec.budget,
+        resumed=resumed,
+        recovered=recovered,
+        refunded=refunded,
+    )
     data_host, index_host = _hosts(settings)
     started = time.monotonic()
     await svc.ops.set_state(job_id, JobState.RUNNING)
@@ -356,7 +369,15 @@ async def _execute(
             await beat
 
     await svc.ops.set_state(job_id, run.state, run.stop_reason)
-    return await _report(job_id, spec, svc, run, plans, started, resumed, recovered, refunded)
+    report = await _report(job_id, spec, svc, run, plans, started, resumed, recovered, refunded)
+    log.info(
+        "job.finished",
+        state=report.state.value,
+        stop_reason=report.stop_reason,
+        rows=report.rows_written,
+        budget_spent=report.budget_spent,
+    )
+    return report
 
 
 async def _heartbeat(ops: JobStore, job_id: str, every: float) -> None:
