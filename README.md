@@ -7,13 +7,85 @@ contains and what its robots.txt allows, and pulls the pages you need from Commo
 instead of from the site, with proof of where every row came from. It's a helper for scraping
 projects, not a scraper.
 
-> Status: **Gate 1 passed.** One targets file turns two public documentation sites into
-> 1,000 verified Common Crawl captures: a robots.txt verdict for every page, raw WARC parts and
-> lake files on an S3-compatible store, a run that survives being killed, and one query that
-> proves every row ([progress logs](docs/progress/)). Site profiles, crawl-to-crawl diffs, export
-> into your own database, a web console and an MCP server come next.
+> Status: **site profiles, crawl-to-crawl diffs and change rates work** (from the index only,
+> no database needed), and **Gate 1 passed**: one targets file turns two public documentation
+> sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for every page, raw
+> WARC parts and lake files on an S3-compatible store, a run that survives being killed, and one
+> query that proves every row. Export into your own database, a Python SDK, a web console and an
+> MCP server come next.
 
-## What works today
+## Before you scrape: profile, diff, changes
+
+Three questions a scraping project asks first, answered from Common Crawl's URL index and the
+crawl's own robots.txt captures. No page of the site is fetched and no database is needed.
+
+```powershell
+uv run strata profile rfc-editor.org --crawls 2 --html docs/examples/rfc-editor.org.html
+uv run strata diff rfc-editor.org            # the two newest crawls
+uv run strata changes rfc-editor.org --crawls 3
+```
+
+**What does the site hold, and what does robots.txt allow?** Real reports:
+[rfc-editor.org](docs/examples/rfc-editor.org.html) and
+[peps.python.org](docs/examples/peps.python.org.html) (open the HTML files locally; they load
+nothing from anywhere).
+
+```text
+rfc-editor.org: 4,686 page(s) in CC-MAIN-2026-43 (6,975 captures)
+  CC-MAIN-2026-39: 3,560 page(s) (5,180 captures)
+  hosts: 6; languages: eng 4,681, - 5
+  URL shapes (pages, allowed by robots.txt):
+    /info/rfcN/…                               3,393, 3,393 allowed
+    /rfc/rfcN.html                               319, 319 allowed
+    /info/bcpN/…                                  73, 73 allowed
+    /search/?…                                    53, 53 allowed
+  robots.txt www.rfc-editor.org: parsed; allowed 4,629
+  robots.txt mailman3.rfc-editor.org: unavailable; allowed 22
+  robots.txt queue.rfc-editor.org: parsed; allowed 14
+  cost: 99 request(s), 186.7 MB read by DuckDB; catalogs from cache: 0/2
+```
+
+Two site catalogs (one per crawl) and three robots.txt lookups, read in 3 minutes. The
+peps.python.org profile cost 73 requests (131.7 MB) and found its robots.txt archived as a 404,
+which RFC 9309 reads as "everything allowed". The first lookup in a crawl also reads that crawl's
+300 Parquet footers once (about 2.5 minutes at 2 requests/s); they are shared by every later
+lookup and never charged to a budget.
+
+**What changed between two crawls?** From the payload digests the index stores for every
+capture, both catalogs already cached by the profile:
+
+```text
+rfc-editor.org: CC-MAIN-2026-39 -> CC-MAIN-2026-43: added 4,058, removed 2,932, changed 619, same 9
+  index requests: 0; page fetches: 0
+  by URL shape (added / removed / changed / same):
+    /info/rfcN/…                              2,829  2,407    564      0
+    /rfc/rfcN.html                              314    322      0      5
+    /info/bcpN/…                                 66     42      7      0
+  removed = not captured in the later crawl (Common Crawl doesn't revisit every page)
+```
+
+**What is worth re-scraping?** Per URL shape, how often a page captured in two consecutive crawls
+had changed. A third crawl's catalog cost 49 requests here (plus that crawl's 300 footer reads):
+
+```text
+rfc-editor.org over 3 crawls (CC-MAIN-2026-34 .. CC-MAIN-2026-43): 939 of 953 re-captures changed (99%)
+  changing (changed / re-captured, pages seen):
+    /info/rfcN/…                              100%     831/831      7,584
+    /search/?…                                100%      28/28          98
+  stable (changed / re-captured, pages seen):
+    /rfc/rfcN.html                              0%       0/9          919
+```
+
+Read it as a scraper would: an RFC's text (`/rfc/rfcN.html`) never changed between crawls, while
+every re-captured `/info/rfcN/` page did. That page embeds something that differs on every
+capture, so its digest says nothing about the RFC. Track changes on the RFC text, not the info
+page. The same command on peps.python.org found 25 of 40 re-captured PEPs changed: PEPs are
+living documents.
+
+## Gate 1 and the job engine
+
+How the packages and the two paths (index only, jobs) fit together:
+[docs/architecture.md](docs/architecture.md).
 
 ```
 targets file ──► site catalog per crawl (cached) ──► pages chosen in md5 order
@@ -56,14 +128,16 @@ You need [uv](https://docs.astral.sh/uv/) and Docker (for Postgres).
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"   # once
 uv sync
-docker compose -f deploy/docker-compose.yml up -d --wait    # Postgres and RustFS
+uv run strata profile peps.python.org --html peps.html      # no database needed
+docker compose -f deploy/docker-compose.yml up -d --wait    # Postgres and RustFS, for jobs
 uv run strata demo --domain python.org --limit 20
 ```
 
 **macOS, Linux, WSL**
 
 ```bash
-uv sync
+make dev                                    # Postgres and RustFS, dependencies, schema
+uv run strata profile peps.python.org --html peps.html
 make demo DOMAIN=python.org LIMIT=20
 ```
 
@@ -184,6 +258,9 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | Command | What it does |
 | --- | --- |
 | `strata crawls` | Newest Common Crawl crawl ids (cached for a day) |
+| `strata profile SITE [--crawls N] [--html FILE]` | Pages per crawl, URL shapes, statuses, MIME types, languages, hosts, path depth and robots.txt (rules, sitemaps, what it allows of each shape), from the index only; an HTML report on request; needs no database |
+| `strata diff SITE [--from A] [--to B]` | Added, removed and changed pages between two crawls, from the index's payload digests; no page fetched; needs no database |
+| `strata changes SITE [--crawls N]` | How often each URL shape changed between consecutive crawls: what is worth re-scraping; needs no database |
 | `strata count SITE --pattern REGEX [--crawl C]` | A site's eligible pages in a crawl, how many URLs match the pattern in full, URL shapes, and the cost estimated before the query; needs no database |
 | `strata discover --domain D [--crawl C] [--limit N] [--index auto\|cdx\|columnar]` | One newest capture per distinct page, with any failed index request listed; needs no database |
 | `strata run cc --domain D [--pattern R] [--limit N] [--budget B] [--index ...]` | Fetch one site into the bronze table |
@@ -192,7 +269,7 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | `strata report JOB_ID` | Attempts per outcome, budget used, the busiest second per host, robots verdicts, rows in the lake |
 | `strata lineage CAPTURE_ID` | Upstream pointer, our copy, digests, archived response headers |
 | `strata migrate` / `strata lake-checkpoint [--older-than I]` | Set everything up (schema, catalog database, buckets, lake tables; runs also do this) / merge small lake files and apply a retention |
-| `strata demo --domain D` | Migrate, fetch, report and trace one row |
+| `strata demo --domain D` | Set up, fetch a few pages, report and trace one row |
 
 Discovery asks the index for five times as many rows as pages wanted (at most 1,000) in a single
 request, keeps the newest capture of each URL, and skips URLs with a query string (`?ref=`,
@@ -210,8 +287,18 @@ with its own HTTP client; its requests are read back from DuckDB's log, stored w
 [ADR-004](docs/adr/004-index-sources.md) and the list of
 [Common Crawl caveats](docs/common-crawl.md) behind it.
 
-Add `--json` to `discover`, `count`, `run cc`, `resume`, `gate1 run`, `report` and `lineage` for machine-readable output. Settings
+Add `--json` to `profile`, `diff`, `changes`, `discover`, `count`, `run cc`, `resume`, `gate1 run`, `report` and `lineage` for machine-readable output. Settings
 come from `STRATA_*` environment variables or a `.env` file ([.env.example](.env.example)).
+Logs go to stderr with a `run_id` on every line (and the `job_id` inside a job); set
+`STRATA_LOG_LEVEL=info` to see job, index-query and sealing events, `STRATA_LOG_FORMAT=json` for
+JSON lines.
+
+No Python? The image runs the CLI as a non-root user:
+
+```powershell
+docker build -f deploy/Dockerfile -t strata .
+docker run --rm -v strata-data:/data strata profile peps.python.org --html /data/peps.html
+```
 
 ## Tests
 
@@ -240,24 +327,48 @@ uv run pytest
 packages/
   strata-core/    models, deterministic ids, settings, migrations, ops store, budget ledger, lake,
                   normalizers
-  strata-fetch/   Common Crawl index sources and shard maps, rate gate, fetcher, WARC checks,
-                  blob stores (local, S3), robots.txt verdicts, jobs and resume, documents, gate
-  strata-cli/     Typer CLI over the library functions
+  strata-fetch/   adapters: Common Crawl index sources (cc/: CDX, URL index, site catalog, shard
+                  map), rate gate, fetcher, WARC checks, blob stores (local, S3), robots.txt,
+                  jobs and resume, documents, gate
+  strata-services/ use cases every interface calls: profile, diff, changes; their wiring
+  strata-cli/     Typer CLI: parses, calls a service or a job, prints
 tests/            unit, integration (Postgres, DuckLake, S3, crash-resume), fake Common Crawl
-deploy/           docker compose (Postgres 16, RustFS); spike/ checks S3-compatible stores (ADR-005)
+deploy/           docker compose (Postgres 16, RustFS), the CLI's Dockerfile; spike/ checks
+                  S3-compatible stores (ADR-005)
 gate1.toml        the Gate 1 targets
+docs/architecture.md  packages, the two paths (index only, jobs), what each request passes
 docs/adr/         decisions
+docs/examples/    site profiles of real sites (HTML)
 docs/progress/    weekly progress logs
 ```
 
 ## Decisions
 
 - [ADR-001: DuckLake with a Postgres catalog](docs/adr/001-table-format.md)
+- [ADR-002: No Spark: one DuckDB process covers the largest unit of work](docs/adr/002-no-spark.md)
 - [ADR-003: Sourcing policy](docs/adr/003-sourcing-policy.md)
 - [ADR-004: Index sources and how discovery fails](docs/adr/004-index-sources.md) (amended twice)
 - [ADR-005: Object storage after MinIO](docs/adr/005-object-storage.md) (RustFS)
 - [ADR-006: robots.txt verdicts](docs/adr/006-robots-verdicts.md)
+- [ADR-007: Code layout: a uv workspace, with the use cases in their own package](docs/adr/007-code-layout.md)
 - [Common Crawl caveats and bottlenecks](docs/common-crawl.md)
+
+## Patterns this code is built on
+
+- **A status state machine per item, enforced in SQL.** A job's state and every attempt's outcome
+  are `CHECK`-constrained columns; the ledger's `CHECK (spent <= cap)` makes overspending a
+  database error, not a bug to notice later.
+- **Idempotent reruns.** Capture ids are hashes of the upstream location (crawl, WARC file,
+  offset), so a rerun or a resume reuses what is stored and inserts nothing twice.
+- **Budget before request.** Every request, retries and DuckDB's own included, is reserved
+  before it is sent; a query the budget can't cover is never run.
+- **Durable before visible.** Bytes and their manifest line are fsync'd, the part is sealed into
+  the store, and only then does a row reach the lake.
+- **Provenance on every row.** Two pointers (Common Crawl's and ours), digests, the robots.txt
+  capture behind the verdict, and the job.
+- **Politeness as config.** Per-host token bucket, in-flight cap, pause on 429/503 with
+  `Retry-After`, robots.txt from the same crawl, and an honest User-Agent, all from
+  `ops.policies` and settings.
 
 ## What it refuses to do
 

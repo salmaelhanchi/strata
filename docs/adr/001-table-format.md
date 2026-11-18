@@ -35,3 +35,9 @@ same SQL is available through `STRATA_LAKE_LOCAL_FILE` for tests and offline wor
   ever has to write tables directly, revisit this ADR in favour of Iceberg.
 - DuckDB downloads the `ducklake` and `postgres` extensions at runtime; environments without that
   download use the local-file mode, and CI runs the real DuckLake test.
+
+## Amendment
+
+Spark left the plan once Strata became a per-site toolkit; ADR-002 records the measurement. The
+lake's data has lived on the S3 API (RustFS locally) since Gate 1, and the processes that share it
+are the CLI, the console and the fetch workers.

@@ -227,7 +227,7 @@ its 400th stored record (2 robots.txt records and 398 pages). Resumed:
   migration 005). The same targets file on the same storage is the same job; `resume` refuses a
   job whose storage differs from the current settings.
 - Removed as redundant: `lake-init`, `oracle fetch`, `normalize`, `gate1 check`. `migrate` does
-  the whole setup; the library functions stay for the Django workers.
+  the whole setup; the library functions stay for the console and the MCP server.
 
 ## To run on your machine (PowerShell)
 
