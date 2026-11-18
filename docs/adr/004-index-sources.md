@@ -1,6 +1,6 @@
 # ADR-004: Index sources and how discovery fails
 
-- Status: accepted
+- Status: accepted; amended in week 2 (see "Amendment, week 2" at the end)
 - Date: 2026-11-08
 - Amends: ADR-003 (budget rule for the URL-index shard map)
 
@@ -113,3 +113,76 @@ the same wrong assumption.
   fixtures had used a naive timestamp, so the `pytz` requirement (decision 8) only surfaced live.
   The fixtures now use the real type plus a naive variant, and a test blocks `pytz` to prove it
   is never needed; it fails on the old code with the live error.
+
+## Amendment, week 2 (2026-11-08, step S10)
+
+Decision 8 said DuckDB's query runs "single-threaded, inside the data host's gate". Both were
+true and neither was enough: the query's own requests were not counted, and `threads = 1` did not
+mean one request at a time. Measured against a local server that holds each answer for 50 ms:
+
+| DuckDB settings | Requests | Most in flight |
+| --- | --- | --- |
+| `threads = 1` (week 1) | 10 | 6 |
+| `threads = 1`, `disable_parquet_prefetching` | 123 | 1 |
+| `threads = 1`, `http_client_pool_capacity = 1` | 10 | 1 |
+| `threads = 2`, `http_client_pool_capacity = 2` | 10 | 2 |
+
+DuckDB's Parquet reader prefetches column chunks in parallel, whatever the thread count.
+Turning prefetching off bounds that, but at twelve times the requests.
+
+11. **Count DuckDB's requests.** Every URL-index query enables DuckDB's `HTTP` and `FileSystem`
+    logs and reads them back afterwards (`duckdb_logs_parsed`): method, URL, status, duration and
+    bytes per request. They are stored in `ops.fetch_attempts` with `client = 'duckdb'` (migration
+    003) and shown by `discover`, `count`, `run` and `report`. A failed query still reports the
+    requests it made.
+12. **Charge them after the query** (further amends ADR-003 §6). DuckDB can't ask the ledger
+    before each request, so a job charges them once the query returns, as far as the caps allow.
+    If they don't fit, the job stops before fetching anything. Footer reads stay exempt
+    (decision 7).
+13. **Bound them.** `http_client_pool_capacity` is set to the thread count, which is 1 by default
+    and at most 2 (`STRATA_INDEX_THREADS`), so ADR-003's limit of two requests in flight holds for
+    DuckDB too. It is not paced to 2 requests per second: DuckDB has no hook for that. Routing
+    its reads through Strata's own client is a week 3 option.
+14. **Filter by host, not registered domain.** The query kept rows whose
+    `url_host_registered_domain` equals the domain asked for. For a host such as `peps.python.org`
+    (registered domain `python.org`) that is nothing. The query now keeps the host and its
+    subdomains (`url_host_name = h OR ends_with(url_host_name, '.' || h)`); the SURT range still
+    does the narrowing. Test fixtures gained `url_host_name`, as the real index has.
+
+15. **Key `www` hosts the way Common Crawl does.** Common Crawl builds `url_surtkey` with the
+    Internet Archive's `surt` library, which drops a leading `www.` (or `wwwN.`):
+    `https://www.rfc-editor.org/info/rfc9309` is `org,rfc-editor)/info/rfc9309`. Our keys kept the
+    `www`, so the first live count for `www.rfc-editor.org` searched `org,rfc-editor,www)`, where
+    no key can be, and found 0 pages after 23 requests and 40 MB. A `www` host is now looked up in
+    its parent domain's range and kept exact by the host filter (decision 14); CDX answers, which
+    pywb keys the same way, are filtered to the host too. Our tests had agreed with the bug
+    because the fake built its keys with our own function, so the key test is now pinned to the
+    library's real output, and the rule was cross-checked against the library on 4,663 random
+    hosts with no difference. One deliberate exception: `www.org` keeps its `www`, since the
+    library's key (`org)`) would turn a lookup into a scan of the whole TLD.
+
+A test serves Parquet over HTTP from a threaded local server and checks that DuckDB's log matches
+what the server saw: the same requests, the same bytes, our User-Agent on each, and no more
+requests in flight than threads.
+
+### Amendment 2 (2026-11-14, week 2 S11): estimate, reserve, settle
+
+16. **Estimate before the query, from the shard map.** The shard map (format 3) keeps each row
+    group's key range, row count and the byte ranges of the columns a site query reads. The
+    estimate counts, per file DuckDB opens, a HEAD, a tail read and the footer's remainder; per
+    row group, the runs of column chunks less than 16 KiB apart, each read in blocks of DuckDB's
+    remote block size (`external_file_cache_remote_max_block_size`, 2 MiB, read from DuckDB), plus
+    one read per run. DuckDB's `parquet_prefetch_column_gap` is pinned to the same 16 KiB.
+    History: one request per chunk was 6 times too high on a small file; one request per run was
+    8 times too low on Common Crawl's 1.67-million-row row groups (6 vs 49, live 2026-11-15);
+    blocks per run: 55 estimated, 54 sent on a 1.6-million-row test file.
+17. **Reserve, then settle** (replaces decision 12's "charge after the query"). The estimate is
+    reserved from the job's budget before the query; if it can't be, the query is not run and
+    nothing is spent. Afterwards the job is refunded or charged the difference with the real
+    count. If the real count exceeds what is left, the job is charged up to its cap and stops
+    before fetching any page.
+18. **One query per site, then choose locally.** A site's eligible captures (status 200,
+    `text/html`, host and subdomains) are read once per crawl into a cached site catalog. Pattern
+    matching, counts, URL shapes and page selection all run on the catalog: the first N matching
+    URLs in md5 order, with spares for pages robots.txt rules out. A job records which captures
+    it selected; a page another job already stored is reused, not fetched again.

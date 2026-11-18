@@ -1,0 +1,42 @@
+# Week 2, S9: object-store spike. Two S3-compatible candidates to replace MinIO, whose community
+# images stopped in October 2025. Run one at a time, check it, record the result in ADR-005.
+#
+#   docker compose -f deploy/spike/compose.yaml up -d rustfs
+#   uv run --with boto3 python deploy/spike/check_store.py rustfs --endpoint http://localhost:19000
+#   docker compose -f deploy/spike/compose.yaml down -v
+#
+# Credentials are for this local spike only. Ports are offset (19000, 18333) so nothing clashes
+# with the main stack.
+name: strata-spike
+
+services:
+  # Configured by environment variables alone, the way a GitHub Actions service container must be.
+  # Pinned to the digest that passed the spike (ADR-005).
+  rustfs:
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2}
+    environment:
+      RUSTFS_ACCESS_KEY: strata-local
+      RUSTFS_SECRET_KEY: strata-local-secret
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+    ports:
+      - "19000:9000"
+    volumes:
+      - rustfs-data:/data
+
+  # Needs a command (`server -s3`), which a GitHub Actions service container can't pass; in CI it
+  # would start from a `docker run` step instead. S3 credentials fall back to the AWS variables.
+  seaweedfs:
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:latest}
+    command: "server -s3 -dir=/data -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=64"
+    environment:
+      AWS_ACCESS_KEY_ID: strata-local
+      AWS_SECRET_ACCESS_KEY: strata-local-secret
+    ports:
+      - "18333:8333"
+    volumes:
+      - seaweedfs-data:/data
+
+volumes:
+  rustfs-data:
+  seaweedfs-data:

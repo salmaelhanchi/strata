@@ -29,6 +29,23 @@ class Ledger(Protocol):
         """Spend one request for (job, host) and for the job total, or refuse without spending."""
         ...
 
+    async def reserve_n(self, job_id: str, host: str, n: int) -> bool:
+        """Spend ``n`` requests at once, or none: for a query whose cost is estimated up front."""
+        ...
+
+    async def refund(self, job_id: str, host: str, n: int) -> int:
+        """Give back up to ``n`` reserved requests that were never sent; returns how many."""
+        ...
+
+    async def charge(self, job_id: str, host: str, n: int) -> int:
+        """Spend ``n`` requests that were already sent, as far as the caps allow.
+
+        For requests nobody could ask about first: DuckDB reads the URL index with its own HTTP
+        client, so its requests are counted after the query (ADR-004 as amended in week 2).
+        Returns how many did not fit; anything above zero means the job must stop.
+        """
+        ...
+
     async def usage(self, job_id: str) -> dict[str, tuple[int, int]]:
         """host -> (spent, cap), including the job total under ``"*"``."""
         ...
@@ -48,6 +65,11 @@ class PostgresLedger:
             )
 
     async def reserve(self, job_id: str, host: str) -> bool:
+        return await self.reserve_n(job_id, host, 1)
+
+    async def reserve_n(self, job_id: str, host: str, n: int) -> bool:
+        if n <= 0:
+            return True
         async with self._pool.connection() as conn, conn.transaction():
             # Lock both rows in a fixed order ('*' sorts first) so two reservations can't deadlock.
             cur = await conn.execute(
@@ -56,14 +78,57 @@ class PostgresLedger:
                 (job_id, [host, JOB_TOTAL]),
             )
             rows = await cur.fetchall()
-            if len(rows) != 2 or any(spent >= cap for _, spent, cap in rows):
+            if len(rows) != 2 or any(spent + n > cap for _, spent, cap in rows):
                 return False
             await conn.execute(
-                "UPDATE ops.budget_ledger SET spent = spent + 1, updated_at = now()"
+                "UPDATE ops.budget_ledger SET spent = spent + %s, updated_at = now()"
                 " WHERE job_id = %s AND host = ANY(%s)",
-                (job_id, [host, JOB_TOTAL]),
+                (n, job_id, [host, JOB_TOTAL]),
             )
         return True  # committed: the spend survives a crash of the request that follows
+
+    async def refund(self, job_id: str, host: str, n: int) -> int:
+        if n <= 0:
+            return 0
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT host, spent FROM ops.budget_ledger"
+                " WHERE job_id = %s AND host = ANY(%s) ORDER BY host FOR UPDATE",
+                (job_id, [host, JOB_TOTAL]),
+            )
+            rows = await cur.fetchall()
+            if len(rows) != 2:
+                return 0
+            back = min(n, *(int(spent) for _, spent in rows))
+            if back > 0:
+                await conn.execute(
+                    "UPDATE ops.budget_ledger SET spent = spent - %s, updated_at = now()"
+                    " WHERE job_id = %s AND host = ANY(%s)",
+                    (back, job_id, [host, JOB_TOTAL]),
+                )
+        return max(back, 0)
+
+    async def charge(self, job_id: str, host: str, n: int) -> int:
+        if n <= 0:
+            return 0
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT host, spent, cap FROM ops.budget_ledger"
+                " WHERE job_id = %s AND host = ANY(%s) ORDER BY host FOR UPDATE",
+                (job_id, [host, JOB_TOTAL]),
+            )
+            rows = await cur.fetchall()
+            if len(rows) != 2:
+                return n
+            room: int = min(int(cap) - int(spent) for _, spent, cap in rows)
+            take = max(0, min(n, room))
+            if take > 0:
+                await conn.execute(
+                    "UPDATE ops.budget_ledger SET spent = spent + %s, updated_at = now()"
+                    " WHERE job_id = %s AND host = ANY(%s)",
+                    (take, job_id, [host, JOB_TOTAL]),
+                )
+        return n - take
 
     async def usage(self, job_id: str) -> dict[str, tuple[int, int]]:
         async with self._pool.connection() as conn:
@@ -85,14 +150,39 @@ class MemoryLedger:
             self._rows.setdefault((job_id, host), [0, cap])
 
     async def reserve(self, job_id: str, host: str) -> bool:
+        return await self.reserve_n(job_id, host, 1)
+
+    async def reserve_n(self, job_id: str, host: str, n: int) -> bool:
         keys = [(job_id, JOB_TOTAL), (job_id, host)]
+        if n <= 0:
+            return True
         if any(k not in self._rows for k in keys):
             return False
-        if any(self._rows[k][0] >= self._rows[k][1] for k in keys):
+        if any(self._rows[k][0] + n > self._rows[k][1] for k in keys):
             return False
         for k in keys:
-            self._rows[k][0] += 1
+            self._rows[k][0] += n
         return True
+
+    async def refund(self, job_id: str, host: str, n: int) -> int:
+        keys = [(job_id, JOB_TOTAL), (job_id, host)]
+        if n <= 0 or any(k not in self._rows for k in keys):
+            return 0
+        back = min(n, *(self._rows[k][0] for k in keys))
+        for k in keys:
+            self._rows[k][0] -= back
+        return back
+
+    async def charge(self, job_id: str, host: str, n: int) -> int:
+        keys = [(job_id, JOB_TOTAL), (job_id, host)]
+        if n <= 0:
+            return 0
+        if any(k not in self._rows for k in keys):
+            return n
+        take = max(0, min(n, *(self._rows[k][1] - self._rows[k][0] for k in keys)))
+        for k in keys:
+            self._rows[k][0] += take
+        return n - take
 
     async def usage(self, job_id: str) -> dict[str, tuple[int, int]]:
         return {h: (s, c) for (j, h), (s, c) in self._rows.items() if j == job_id}

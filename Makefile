@@ -5,7 +5,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 DOMAIN ?= example.org
 CRAWL ?= latest
 LIMIT ?= 50
-BUDGET ?= 60
+BUDGET ?= 50
 TEST_PG_DSN ?= postgresql://strata:strata@localhost:5432/strata_ops
 
 .PHONY: up down migrate lake-init check test demo clean

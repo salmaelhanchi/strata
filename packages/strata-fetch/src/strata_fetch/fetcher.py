@@ -42,7 +42,7 @@ from strata_core.models import (
     Verification,
 )
 from strata_core.ops import AttemptLog
-from strata_fetch.blobstore import RawWarcWriter
+from strata_fetch.blobstore import PartWriter
 from strata_fetch.http import (
     RETRYABLE_EXCEPTIONS,
     backoff_delay,
@@ -68,8 +68,8 @@ class FetchContext:
     gate: HostGate
     ledger: Ledger
     attempts: AttemptLog
-    raw: RawWarcWriter
-    quarantine: RawWarcWriter
+    raw: PartWriter
+    quarantine: PartWriter
     job_id: str
     data_base: str = "https://data.commoncrawl.org/"
     backoff: Sequence[float] = (2.0, 10.0, 30.0, 60.0)
@@ -88,6 +88,7 @@ class FetchResult:
     quarantined: BlobRef | None = None
     bytes_stored: int = 0
     error: str | None = None
+    body: bytes | None = None  # the stored record, for callers that read it (robots.txt)
 
 
 async def _read_capped(resp: httpx.Response, cap: int) -> bytes:
@@ -163,7 +164,8 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
         )
 
         if outcome is Outcome.OK and body is not None and verified is not None:
-            blob = ctx.raw.append(body)  # durable (fsync) before the row exists
+            blob = ctx.raw.append(body)  # durable (fsync) before the row exists; no await between
+            # this and the caller logging the row, so a flush can't close the part in between
             return FetchResult(
                 ref=ref,
                 outcome=Outcome.OK,
@@ -171,6 +173,7 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
                 capture=_capture(ref, ctx, blob, body, verified, started_at),
                 verified=verified,
                 bytes_stored=len(body),
+                body=body,
             )
         if verification_failures >= MAX_VERIFICATION_FAILURES and body is not None:
             return FetchResult(

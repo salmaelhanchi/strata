@@ -77,6 +77,51 @@ caveat is in the last section and in [ADR-004](adr/004-index-sources.md).
   and turning it into Python objects failed without `pytz`. DuckDB also converts that type to the
   session's local time zone, so code that assumes UTC can be silently wrong. Select
   `epoch_ms(fetch_time)` and convert explicitly.
+- **Keys drop a leading `www`.** `url_surtkey` comes from the Internet Archive's `surt` library,
+  which removes a leading `www.` (or `www2.` and so on) before reversing the host:
+  `https://www.rfc-editor.org/info/rfc9309` is keyed `org,rfc-editor)/info/rfc9309`, the same as
+  `rfc-editor.org`. A range built for `org,rfc-editor,www)` finds nothing, and silently.
+  **Measured:** our first count for `www.rfc-editor.org` returned 0 pages this way, after 23
+  requests and 40 MB. Look up a `www` host in its parent domain's range, then keep the host with
+  `url_host_name`.
+- **Keys drop trailing slashes and the scheme too.** The `surt` library also removes repeated and
+  trailing slashes (`/pep-0008/` is keyed `/pep-0008`) and ignores the scheme, so
+  `http://example.org/robots.txt` and `https://www.example.org/robots.txt` share one key. A lookup
+  by exact key must then pick the right host and scheme among the rows it gets back. **Found by a
+  test:** the usual robots.txt redirect, `example.org` to `www.example.org`, revisits the same key,
+  and a loop check on the key alone called it a loop.
+- **robots.txt captures have their own subset.** `subset=robotstxt` holds what servers returned
+  for `/robots.txt`, separate from page captures (`warc`) and other non-200 responses
+  (`crawldiagnostics`) ([2016 announcement](https://commoncrawl.org/blog/robotstxt-and-404-redirect-data-sets)).
+  That is the evidence a verdict can rest on without sending the site a request. Gaps: since
+  2021 a robots.txt is not archived when a redirect leads to a host whose own robots.txt forbids
+  it, when URL filters exclude the whole site, or when the response isn't a plausible robots.txt
+  type such as HTML or PDF ([July/August 2021 crawl](https://commoncrawl.org/blog/july-august-2021-crawl-archive-available)),
+  so "no capture" doesn't mean "no robots.txt": Strata marks such hosts `needs_review`. A redirect
+  target in the URL index may be relative ([errata](https://commoncrawl.org/errata)); resolve it
+  against the capture's URL. Some older crawls carry wrong `fetch_time` values for robots.txt
+  captures, which matters when choosing the newest one ([errata](https://commoncrawl.org/errata)).
+- **A host is not a registered domain.** `url_host_registered_domain` for `peps.python.org` is
+  `python.org`, so filtering a host's pages on that column finds nothing, silently. Filter on
+  `url_host_name` (the host, or a suffix for its subdomains) and let the SURT range do the pruning;
+  `url_host_name` has no useful row-group statistics of its own
+  ([Skeptric](https://skeptric.com/reading-parquet-metadata/index.html) found them empty).
+- **DuckDB's thread count doesn't bound its requests.** **Measured** against a local server: with
+  `threads = 1`, DuckDB's Parquet reader still had 6 range requests in flight, prefetching column
+  chunks in parallel. `disable_parquet_prefetching` brings that to one at a time but multiplies the
+  requests by 12 (10 became 123). `http_client_pool_capacity` set to the thread count bounds the
+  requests in flight and keeps the same 10 requests. DuckDB's `HTTP` log
+  (`duckdb_logs_parsed('HTTP')`) lists every request with status, duration and size, so they can be
+  counted and charged like any other.
+- **DuckDB merges nearby reads, then splits big ones into 2 MiB blocks.** **Measured** against a
+  local server: per file a HEAD, a tail read and the rest of the footer; then, per row group, the
+  column chunks a query needs are merged into runs where they sit close together, and each run
+  is fetched in blocks of `external_file_cache_remote_max_block_size` (2 MiB in DuckDB 2.0).
+  Common Crawl's row groups are large (1.67 million rows in the one holding www.rfc-editor.org),
+  so the block size, not the number of columns, sets the request count: **measured live**, 49
+  requests for 95 MB. A model of one request per run predicted 6; counting blocks predicts within
+  one request on a 1.6-million-row test file. The columns a site query skips (`url_path`,
+  `url_query`, ...) sit between the ones it reads, which is what splits a row group into runs.
 - **Compression changed.** Files are ZStandard-compressed from `CC-MAIN-2026-30`
   ([July 2026 crawl](https://blog.commoncrawl.org/blog/july-2026-crawl-archive-now-available)), so
   a reader without ZStandard support can't read new crawls.
@@ -128,9 +173,15 @@ caveat is in the last section and in [ADR-004](adr/004-index-sources.md).
 | CDX server overloaded, 10 s gateway | `--index auto`: two CDX attempts, then the Parquet URL index; answers cached per crawl and domain |
 | 500s that mean different things | Throttling is backed off, regex errors are never retried, other 500s get one retry |
 | Filter syntax traps | Filters built in one place and checked locally against pywb's grammar; the fake server implements the documented semantics, so tests catch a wrong reading |
-| SURT order: homepage variants first | Over-fetch 5× in one request, one newest capture per URL, query-string URLs dropped unless asked for |
+| SURT order: homepage variants first | CDX: over-fetch 5× in one request; URL index: a site read once per crawl into a cached catalog. One newest capture per URL, query-string URLs dropped unless asked for, pages chosen in md5 order |
 | 300 footers per URL-index query | A shard map: each footer read once with a suffix-range request, paced and logged, cached per crawl, resumable; a lookup opens 1–2 files (python.org: 1) |
 | Timezone-aware `fetch_time` | Read as epoch milliseconds and converted to UTC; tests use the real column type and block `pytz` |
+| DuckDB's own requests | Read from DuckDB's HTTP log after every query, stored with `client = 'duckdb'`, charged to the job, and capped at 1–2 in flight with `http_client_pool_capacity` (ADR-004, amendments) |
+| Host vs registered domain | Pages filtered by `url_host_name` and SURT range, so a host such as `peps.python.org` works |
+| Keys without `www` | Keys built with the `surt` library's rule (a leading `www`/`wwwN` dropped), pinned in tests to the library's real output; a `www` host is searched in its parent's range and filtered by host |
 | Truncated payloads | Bytes stored exactly as served; index digest checked against the WARC header; recomputed digest tracked separately |
 | Format drift | Parse defensively; read the errata before adopting a new crawl (a practice, not code) |
-| Coverage bias | Robots verdicts recorded per page (week 2); reports state the crawl and source of every row |
+| Keys without slashes or scheme | Exact keys built like the library's (pinned to 20 more of its outputs); robots.txt lookups keep only the exact host and prefer the scheme asked for; a loop is the same scheme, host and key twice |
+| DuckDB's cost known only afterwards | Estimated before the query from the byte ranges the shard map keeps per row group (runs, 2 MiB blocks, as measured), reserved from the budget, settled to the real count; a query the budget can't cover is not run |
+| robots.txt without asking the site | Verdicts from the crawl's own robots.txt captures (`robotstxt` subset), redirects followed up to 5, RFC 9309 status rules (ADR-006) |
+| Coverage bias | Robots verdicts recorded per page; reports state the crawl and source of every row |

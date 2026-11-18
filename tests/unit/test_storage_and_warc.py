@@ -6,7 +6,7 @@ import pytest
 from warcio.archiveiterator import ArchiveIterator
 
 from strata_core.models import BlobRef, Verification
-from strata_fetch.blobstore import LocalBlobStore, RawWarcWriter
+from strata_fetch.blobstore import LocalBlobStore, PartWriter, read_blob
 from strata_fetch.warc import verify_record, view_record
 from tests.fakecc import build_warc
 
@@ -16,37 +16,43 @@ PAGES = [
 ]
 
 
-def test_append_returns_offsets_and_reads_back(tmp_path: Path) -> None:
-    store = LocalBlobStore(tmp_path)
-    a = store.append("job/part-00000.warc.gz", b"hello")
-    b = store.append("job/part-00000.warc.gz", b"world!")
+def test_part_writer_appends_and_reads_back(tmp_path: Path) -> None:
+    writer = PartWriter(tmp_path, LocalBlobStore(tmp_path), "job")
+    a = writer.append(b"hello")
+    b = writer.append(b"world!")
     assert (a.offset, a.length, b.offset, b.length) == (0, 5, 5, 6)
-    assert store.read(b) == b"world!"
-    assert a.uri.startswith("file://")
+    assert read_blob(b) == b"world!"
+    assert a.uri.startswith("file://") and a.uri.endswith("job/part-00000.warc.gz")
 
 
 def test_store_refuses_escaping_keys_and_short_reads(tmp_path: Path) -> None:
     store = LocalBlobStore(tmp_path)
     with pytest.raises(ValueError):
-        store.append("../outside", b"x")
-    ref = store.append("k", b"abc")
+        store.uri("../outside")
+    with pytest.raises(ValueError):
+        PartWriter(tmp_path, store, "../outside")
+    ref = PartWriter(tmp_path, store, "k").append(b"abc")
     with pytest.raises(OSError):
-        store.read(BlobRef(uri=ref.uri, offset=0, length=10))
+        read_blob(BlobRef(uri=ref.uri, offset=0, length=10))
 
 
-def test_writer_rotates_parts(tmp_path: Path) -> None:
-    writer = RawWarcWriter(LocalBlobStore(tmp_path), "job_x", rotate_bytes=10)
+def test_writer_rotates_parts_when_full(tmp_path: Path) -> None:
+    writer = PartWriter(tmp_path, LocalBlobStore(tmp_path), "job_x", rotate_bytes=10)
     refs = [writer.append(b"123456") for _ in range(3)]
     assert [Path(r.uri).name for r in refs] == [
         "part-00000.warc.gz",
         "part-00001.warc.gz",
         "part-00002.warc.gz",
     ]
+    assert [p.key for p in writer.take_closed()] == [
+        "job_x/part-00000.warc.gz",
+        "job_x/part-00001.warc.gz",
+    ]
 
 
 def test_concatenated_records_are_a_valid_warc_file(tmp_path: Path) -> None:
     warc = build_warc(PAGES)
-    writer = RawWarcWriter(LocalBlobStore(tmp_path), "job_y")
+    writer = PartWriter(tmp_path, LocalBlobStore(tmp_path), "job_y")
     for ref in warc.refs:
         start = ref.warc_record_offset
         writer.append(warc.data[start : start + ref.warc_record_length])

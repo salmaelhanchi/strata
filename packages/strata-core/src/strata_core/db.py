@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from importlib import resources
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 _MIGRATIONS_PACKAGE = "strata_core.migrations"
@@ -49,6 +50,24 @@ async def migrate(dsn: str) -> list[str]:
         finally:
             await conn.execute("SELECT pg_advisory_unlock(hashtext('strata_migrations'))")
     return applied
+
+
+async def ensure_database(conninfo: str) -> bool:
+    """Create the database ``conninfo`` names if its server lacks it; True if created.
+
+    For DuckLake's catalog: a lake's data path is fixed when its catalog is created (DuckLake
+    refuses another), so a lake on S3 gets its own catalog database rather than reusing one."""
+    params = conninfo_to_dict(conninfo)
+    name = str(params.get("dbname") or "")
+    if not name:
+        raise ValueError("the lake catalog connection string names no database (dbname=...)")
+    maintenance = make_conninfo(conninfo, dbname="postgres")
+    async with await AsyncConnection.connect(maintenance, autocommit=True) as conn:
+        cur = await conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+        if await cur.fetchone() is not None:
+            return False
+        await conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        return True
 
 
 def make_pool(dsn: str, *, max_size: int = 10) -> AsyncConnectionPool:

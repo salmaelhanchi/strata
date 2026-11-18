@@ -8,6 +8,8 @@ dependencies = [
     "strata-core",
     "httpx>=0.28",
     "warcio>=1.7",
+    "boto3>=1.40",
+    "protego>=0.4",
 ]
 
 [tool.uv.sources]

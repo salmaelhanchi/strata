@@ -16,3 +16,7 @@ __pycache__/
 .hypothesis/
 dist/
 build/
+
+# private handoff files: never commit
+CLAUDE.md
+HANDOFF.md

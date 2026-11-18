@@ -8,14 +8,14 @@ WARC bytes with a bronze row that traces back to them.
 | Step | State | Evidence |
 | --- | --- | --- |
 | S0 Sourcing and table-format ADRs | Done | `docs/adr/001-table-format.md`, `docs/adr/003-sourcing-policy.md`; ADR-004 (index sources) added after the first live runs |
-| S1 Repo skeleton, CI, Compose | Done; Compose run live; CI not yet run on GitHub | `pyproject.toml` (uv workspace), `.github/workflows/ci.yml`, `deploy/docker-compose.yml`, `Makefile` |
+| S1 Repo skeleton, CI, Compose | Done; Compose run live; CI green on GitHub (both jobs, 40 s) | `pyproject.toml` (uv workspace), `.github/workflows/ci.yml`, `deploy/docker-compose.yml`, `Makefile` |
 | S2 Core models and settings | Done | `strata_core/models.py`, `ids.py`, `settings.py`; property tests |
 | S3 Ops database and budget ledger | Done | migrations 001–002, `ledger.py`; 50 concurrent reservations vs cap 10 give exactly 10 |
 | S4 Common Crawl discovery | Done; both indexes run live (CDX down all morning; URL index answered) | `CdxIndex`, `ColumnarIndex` with a shard map, `AutoIndex` fallback (ADR-004), contract test |
 | S5 Polite WARC fetcher | Done; run live: 20/20 records at 2.1 requests/s | `fetcher.py`, `ratelimit.py`, `warc.py`; every outcome-table row tested |
 | S6 Bronze table | Done; live on DuckLake with the Postgres catalog (20 rows) | `lake.py`; idempotent rerun test |
 | S7 CLI, report, lineage | Done; `strata demo` run live end to end | `strata demo`, `run cc`, `report`, `lineage`; CLI end-to-end test |
-| S8 Verify and hand-off | In progress | see "Still to do" |
+| S8 Verify and hand-off | Done | pushed to github.com/salmaelhanchi/strata, CI green, tagged `v0.1.0` |
 
 Checks after the timestamp fix (ADR-004, item 10): 109 tests passed, 1 skipped (DuckLake: extensions
 can't be downloaded in the build sandbox); `ruff check`, `ruff format --check` and `mypy --strict`
@@ -23,14 +23,15 @@ clean.
 
 ## Still to do this week
 
-- [ ] Push to GitHub and get both CI jobs green (the integration job also runs the DuckLake test)
+- [x] Push to GitHub and get both CI jobs green: 96 unit and 14 integration tests passed, including
+      the DuckLake test, which ran for the first time
 - [x] `docker compose up`, then `strata demo` against real Common Crawl (2026-11-08, see below)
 - [x] Live run of 20 records; real output in the README ("A real run")
 - [x] First live URL-index lookup: shard map built for CC-MAIN-2026-43 (see item 10)
 - [x] Rerun `strata discover --domain python.org --limit 20 --index columnar` after the
       timestamp fix: 0 footers read, 1 of 300 files queried, 55.3 s inside DuckDB
 - [x] Record measured numbers below
-- [ ] Tag `v0.1.0`
+- [x] Tag `v0.1.0`
 
 ## Measured numbers (live runs, 2026-11-08, python.org, CC-MAIN-2026-43)
 

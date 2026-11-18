@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import duckdb
 import httpx
@@ -82,7 +83,8 @@ async def test_finds_refs_then_serves_them_from_cache(
         index = cdx(fake, client, tmp_path)
         first = await index.find("example.org", CRAWL, limit=3)
         second = await index.find("example.org", CRAWL, limit=3)
-    assert [r.url for r in first.refs] == [p[0] for p in PAGES[:3]]
+    # Three pages, chosen in md5 order of the URL (spread across the site, stable across runs).
+    assert len(first.refs) == 3 and {r.url for r in first.refs} <= {p[0] for p in PAGES}
     assert (first.from_cache, first.requests) == (False, 1)
     assert (second.from_cache, second.requests) == (True, 0)
     assert second.refs == first.refs
@@ -108,6 +110,32 @@ async def test_cache_answers_larger_limits_only_when_it_holds_enough(
     assert (bigger.from_cache, len(bigger.refs)) == (False, 20)
     assert (everything.from_cache, len(everything.refs)) == (True, 30)
     assert cc.count("/" + CRAWL) == 2
+
+
+async def test_cdx_answers_for_a_www_host_keep_only_that_host(
+    httpserver: HTTPServer, tmp_path: Path
+) -> None:
+    """pywb, like the URL index, keys www.example.org as org,example): asked for the www host it
+    answers for the whole domain, and discovery keeps the host it was asked for."""
+    pages = [
+        ("https://example.org/", b"<html>bare</html>"),
+        ("https://www.example.org/a", b"<html>a</html>"),
+        ("https://docs.example.org/b", b"<html>b</html>"),
+        ("https://www.example.org/c", b"<html>c</html>"),
+    ]
+    warc = build_warc(pages)
+    assert [r.url_surtkey for r in warc.refs][:2] == ["org,example)/", "org,example)/a"]
+    cc = FakeCommonCrawl(httpserver)
+    cc.add_warc(warc)
+    cc.cdx_refs[CRAWL] = warc.refs
+    cc.install()
+    async with httpx.AsyncClient() as client:
+        found = await cdx(cc, client, tmp_path).find("www.example.org", CRAWL, limit=10)
+    assert sorted(r.url for r in found.refs) == [
+        "https://www.example.org/a",
+        "https://www.example.org/c",
+    ]
+    assert found.rows_scanned == 4
 
 
 async def test_a_cache_from_an_older_version_is_ignored(
@@ -351,7 +379,10 @@ async def test_auto_falls_back_to_the_url_index_when_the_cdx_server_is_down(
         result = await auto.find("example.org", CRAWL, 10)
     assert result.source == "columnar"
     assert result.fallback_reason == "CDX server unavailable (2 attempt(s): HTTP 504, HTTP 504)"
-    assert [r.url for r in result.refs] == ["https://example.org/a", "https://www.example.org/b"]
+    assert sorted(r.url for r in result.refs) == [
+        "https://example.org/a",
+        "https://www.example.org/b",
+    ]
     assert result.requests == 2 and len(result.attempts) == 2
 
 
@@ -375,7 +406,9 @@ async def test_auto_reports_both_failures_when_the_fallback_fails_too(
     fake.fail_next["/" + CRAWL + "-index"].extend([(504, {}, GATEWAY_TIMEOUT)] * 2)
 
     class Down:
-        async def find(self, domain: str, crawl: str, limit: int) -> DiscoveryResult:
+        async def find(
+            self, domain: str, crawl: str, limit: int, pattern: str | None = None
+        ) -> DiscoveryResult:
             raise IndexUnavailableError("URL index query failed: HTTP 503")
 
     async with httpx.AsyncClient() as client:
@@ -390,7 +423,8 @@ async def test_auto_reports_both_failures_when_the_fallback_fails_too(
 # ------------------------------------------------------------------------------ columnar index
 # fetch_time is timezone-aware, as DuckDB reads Common Crawl's real files (CC-MAIN-2026-43).
 INDEX_COLUMNS = (
-    "url_surtkey VARCHAR, url VARCHAR, url_host_registered_domain VARCHAR, fetch_time TIMESTAMPTZ,"
+    "url_surtkey VARCHAR, url VARCHAR, url_host_name VARCHAR, url_host_registered_domain VARCHAR,"
+    " fetch_time TIMESTAMPTZ,"
     " fetch_status SMALLINT, content_digest VARCHAR, content_mime_type VARCHAR,"
     " content_mime_detected VARCHAR, warc_filename VARCHAR, warc_record_offset INTEGER,"
     " warc_record_length INTEGER"
@@ -401,7 +435,7 @@ ROWS = [
     ("org,example)/a", "https://example.org/a", "example.org", 200, "text/html"),
     ("org,example)/a", "https://example.org/a", "example.org", 200, "text/html"),
     ("org,example)/a?ref=x", "https://example.org/a?ref=x", "example.org", 200, "text/html"),
-    ("org,example,www)/b", "https://www.example.org/b", "example.org", 200, "text/html"),
+    ("org,example)/b", "https://www.example.org/b", "example.org", 200, "text/html"),
     ("org,example)/c.pdf", "https://example.org/c.pdf", "example.org", 200, "application/pdf"),
     ("org,example)/gone", "https://example.org/gone", "example.org", 404, "text/html"),
     ("org,example-shop)/x", "https://example-shop.org/x", "example-shop.org", 200, "text/html"),
@@ -431,10 +465,11 @@ def write_index_fixture(
     con.execute(f"CREATE TABLE t ({columns})")
     for i, (surt, url, reg, status, mime) in enumerate(ROWS if rows is None else rows):
         con.execute(
-            "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 surt,
                 url,
+                urlparse(url).hostname,
                 reg,
                 # an explicit offset, so the value doesn't depend on the machine's time zone
                 f"2026-04-20 10:{i:02d}:00" + ("" if naive_fetch_time else "+00"),
@@ -464,25 +499,31 @@ async def test_columnar_reads_both_timestamp_types_without_pytz(
     from_aware = (await aware.find("example.org", CRAWL, limit=10)).refs
     from_naive = (await naive.find("example.org", CRAWL, limit=10)).refs
     assert from_aware == from_naive
-    assert from_aware[0].fetch_time == datetime(2026, 4, 20, 10, 1, tzinfo=UTC)
+    page_a = next(r for r in from_aware if r.url == "https://example.org/a")
+    assert page_a.fetch_time == datetime(2026, 4, 20, 10, 1, tzinfo=UTC)
 
 
 async def test_columnar_scans_only_the_domain_and_its_subdomains(tmp_path: Path) -> None:
     index = ColumnarIndex(StaticShards([write_index_fixture(tmp_path)]))
     result = await index.find("example.org", CRAWL, limit=50)
-    assert [r.url for r in result.refs] == ["https://example.org/a", "https://www.example.org/b"]
+    assert sorted(r.url for r in result.refs) == [
+        "https://example.org/a",
+        "https://www.example.org/b",
+    ]
     assert all(r.crawl == CRAWL and r.status == 200 for r in result.refs)
 
 
 async def test_columnar_can_keep_query_string_variants(tmp_path: Path) -> None:
     index = ColumnarIndex(StaticShards([write_index_fixture(tmp_path)]), include_query_strings=True)
     result = await index.find("example.org", CRAWL, limit=50)
-    assert [r.url for r in result.refs] == [
+    assert sorted(r.url for r in result.refs) == [
         "https://example.org/a",
         "https://example.org/a?ref=x",
         "https://www.example.org/b",
     ]
-    assert result.rows_scanned == 4  # two /a rows collapsed into one page
+    # Every capture of the site, any status or type (the catalog keeps the counts); the two /a
+    # rows collapse into one page, and the 404 and non-HTML rows are not pages.
+    assert result.rows_scanned == 6
 
 
 async def test_columnar_respects_limit_and_crawl(tmp_path: Path) -> None:
@@ -495,7 +536,8 @@ async def test_columnar_respects_limit_and_crawl(tmp_path: Path) -> None:
 async def test_both_index_sources_return_identical_refs(tmp_path: Path) -> None:
     """Contract: the same row through the CDX server and the columnar index is the same ref."""
     shard = write_index_fixture(tmp_path)
-    columnar = (await ColumnarIndex(StaticShards([shard])).find("example.org", CRAWL, 1)).refs[0]
+    refs = (await ColumnarIndex(StaticShards([shard])).find("example.org", CRAWL, 10)).refs
+    columnar = next(r for r in refs if r.url == "https://example.org/a")
     from_cdx = parse_cdx_line(cdx_line(columnar), CRAWL)
     assert from_cdx == columnar
     assert columnar.fetch_time == datetime(2026, 4, 20, 10, 1, tzinfo=UTC)  # newer of two /a rows
@@ -512,7 +554,10 @@ async def test_columnar_with_a_shard_map_opens_only_covering_files(tmp_path: Pat
         StaticShards(shards), shard_map=ShardMap(LocalTail(), cache_dir=tmp_path / "cache")
     )
     found = await first.find("example.org", CRAWL, limit=10)
-    assert [r.url for r in found.refs] == ["https://example.org/a", "https://www.example.org/b"]
+    assert sorted(r.url for r in found.refs) == [
+        "https://example.org/a",
+        "https://www.example.org/b",
+    ]
     assert (found.shards_total, found.shards_queried, found.footers_read) == (3, 1, 3)
 
     later = ColumnarIndex(

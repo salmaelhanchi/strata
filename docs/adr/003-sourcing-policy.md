@@ -1,6 +1,6 @@
 # ADR-003: Sourcing policy
 
-- Status: accepted
+- Status: accepted (example in §1 updated 2026-11-08 for the public standards-documents subject)
 - Date: 2026-11-07
 
 ## Context
@@ -15,8 +15,8 @@ asks clients to cache. How a sourcing engine behaves is part of what it delivers
 ## Decision
 
 1. **Sources.** Bulk pages come from Common Crawl. The Wayback Machine is used only for targeted
-   history on a few URLs. Where an official API exists (EPO OPS for patents, Wikidata for entities)
-   we use it instead of automating the website.
+   history on a few URLs. Where a publisher offers an official index or API (for example
+   peps.python.org's `peps.json`), we use it instead of automating the website.
 2. **Rates.** Per-host policies live in `ops.policies`: `data.commoncrawl.org` at 2 requests/s with
    at most 2 in flight; `index.commoncrawl.org` at one request every 2 s, one at a time, every answer
    cached. Hosts without a policy get 1 request/s, one at a time.
@@ -26,7 +26,9 @@ asks clients to cache. How a sourcing engine behaves is part of what it delivers
    solving, proxy rotation or fingerprint evasion.
 5. **Identity.** An honest User-Agent naming the project and its repository URL.
 6. **Budgets.** Every job has a request budget, retries included, reserved and committed before each
-   request is sent. A breach stops the job; it is never just logged.
+   request is sent. A breach stops the job; it is never just logged. (ADR-004 adds two exceptions:
+   shared shard-map footer reads are exempt, and DuckDB's URL-index requests are charged after the
+   query, because DuckDB can't ask first.)
 7. **Provenance.** Every row records where its bytes came from, when, and the policy verdict at fetch
    time (`not_evaluated` until robots.txt and AI-preference checks land in week 2).
 8. **Distribution.** We publish pipelines and small samples with provenance, not bulk copies of

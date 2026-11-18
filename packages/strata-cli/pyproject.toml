@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-strata = "strata_cli.main:app"
+strata = "strata_cli.main:main"
 
 [tool.uv.sources]
 strata-core = { workspace = true }

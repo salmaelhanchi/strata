@@ -50,3 +50,39 @@ def test_ducklake_round_trip_and_idempotent_rerun(catalog_conninfo: str, tmp_pat
     with Lake.attach_ducklake(catalog_conninfo, data) as lake:
         assert lake.insert_captures([make_capture(1), make_capture(2)]) == 0
         assert lake.capture_ids() == ["cap0001", "cap0002"]
+
+
+def test_checkpoint_merges_flushes_and_retention_deletes_the_old_files(
+    catalog_conninfo: str, tmp_path: Path
+) -> None:
+    """S17: small bronze flushes become one file; with a retention, the merged ones go too."""
+    data = tmp_path / "lake"
+    on_disk = lambda: len(list(data.rglob("*.parquet")))  # noqa: E731
+    with Lake.attach_ducklake(catalog_conninfo, data) as lake:
+        lake.bootstrap()
+        for batch in range(4):
+            lake.insert_captures([make_capture(batch * 10 + i) for i in range(10)])
+        assert (lake.data_files(), on_disk()) == (4, 4)
+        before, after, _ = lake.checkpoint()
+        assert (before, after, on_disk()) == (4, 1, 5)  # merged; old files kept for time travel
+        lake.insert_captures([make_capture(100)])
+        _, after, _ = lake.checkpoint(older_than="0 seconds")
+        assert after == 1 and on_disk() == 1
+        assert lake.count() == 41
+        with pytest.raises(duckdb.Error):
+            lake.checkpoint(older_than="1 day; DROP TABLE x")
+
+
+def test_inlined_flushes_write_no_files_until_checkpoint(
+    catalog_conninfo: str, tmp_path: Path
+) -> None:
+    data = tmp_path / "lake"
+    with Lake.attach_ducklake(catalog_conninfo, data, inlining_rows=50) as lake:
+        lake.bootstrap()
+        for batch in range(4):
+            lake.insert_captures([make_capture(batch * 10 + i) for i in range(10)])
+        assert lake.count() == 40
+        assert list(data.rglob("*.parquet")) == []  # the rows live in the catalog for now
+        lake.checkpoint()
+        assert len(list(data.rglob("*.parquet"))) == 1
+        assert lake.count() == 40

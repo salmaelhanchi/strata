@@ -1,5 +1,8 @@
-# Local services for Strata. Week 1 needs only Postgres; MinIO joins in week 2.
+# Local services for Strata: Postgres (ops schema and DuckLake catalogs) and RustFS, the
+# S3-compatible store for raw WARC parts and lake files (ADR-005).
 #   docker compose -f deploy/docker-compose.yml up -d --wait
+# `strata migrate` (and every command that writes) creates the databases, buckets and tables
+# it needs. Credentials are for local development only.
 name: strata
 
 services:
@@ -13,13 +16,26 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Creates the ducklake_catalog database on first start (DuckLake needs it to exist).
-      - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U strata -d strata_ops"]
       interval: 5s
       timeout: 5s
       retries: 20
 
+  # Pinned to the digest that passed deploy/spike/check_store.py (ADR-005). A new digest is a
+  # commit that reruns the spike first.
+  rustfs:
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2}
+    environment:
+      RUSTFS_ACCESS_KEY: strata-local
+      RUSTFS_SECRET_KEY: strata-local-secret # local development only
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+    ports:
+      - "9000:9000"
+    volumes:
+      - rustfs-data:/data
+
 volumes:
   pgdata:
+  rustfs-data:

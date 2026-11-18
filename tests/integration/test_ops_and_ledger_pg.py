@@ -11,12 +11,15 @@ from psycopg_pool import AsyncConnectionPool
 
 from strata_core.db import migrate
 from strata_core.ledger import JOB_TOTAL, PostgresLedger
-from strata_core.models import Attempt, CrawlSpec, JobState, Outcome
+from strata_core.models import Attempt, CrawlSpec, JobState, Outcome, RequestClient
 from strata_core.ops import OpsStore
 
 pytestmark = pytest.mark.postgres
 
 HOST = "data.commoncrawl.org"
+
+
+STORAGE = {"staging": "/tmp/raw", "raw": "file /tmp/raw", "lake": "duckdb /tmp/lake.duckdb"}
 
 
 def _spec(budget: int = 10) -> CrawlSpec:
@@ -26,7 +29,13 @@ def _spec(budget: int = 10) -> CrawlSpec:
 async def test_migrate_is_idempotent(pg_dsn: str) -> None:
     first = await migrate(pg_dsn)
     second = await migrate(pg_dsn)
-    assert first == ["001_init", "002_seed_policies"]
+    assert first == [
+        "001_init",
+        "002_seed_policies",
+        "003_request_client",
+        "004_resume_and_robots",
+        "005_job_storage",
+    ]
     assert second == []
 
 
@@ -42,7 +51,7 @@ async def test_seeded_policies_follow_adr_003(ops_pool: AsyncConnectionPool) -> 
 
 async def test_concurrent_reservations_never_exceed_the_cap(ops_pool: AsyncConnectionPool) -> None:
     ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
-    await ops.create_job("job_a", _spec(10))
+    await ops.create_job("job_a", _spec(10), STORAGE)
     await ledger.open("job_a", total_cap=10, host_caps={HOST: 50})
 
     results = await asyncio.gather(*(ledger.reserve("job_a", HOST) for _ in range(50)))
@@ -55,7 +64,7 @@ async def test_concurrent_reservations_never_exceed_the_cap(ops_pool: AsyncConne
 
 async def test_host_cap_binds_before_the_job_total(ops_pool: AsyncConnectionPool) -> None:
     ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
-    await ops.create_job("job_b", _spec(10))
+    await ops.create_job("job_b", _spec(10), STORAGE)
     await ledger.open("job_b", total_cap=10, host_caps={HOST: 3, "index.commoncrawl.org": 10})
 
     assert [await ledger.reserve("job_b", HOST) for _ in range(5)] == [True] * 3 + [False] * 2
@@ -65,7 +74,7 @@ async def test_host_cap_binds_before_the_job_total(ops_pool: AsyncConnectionPool
 
 async def test_unknown_host_or_job_is_refused(ops_pool: AsyncConnectionPool) -> None:
     ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
-    await ops.create_job("job_c", _spec())
+    await ops.create_job("job_c", _spec(), STORAGE)
     await ledger.open("job_c", total_cap=5, host_caps={HOST: 5})
     assert await ledger.reserve("job_c", "elsewhere.example") is False
     assert await ledger.reserve("no_such_job", HOST) is False
@@ -76,7 +85,7 @@ async def test_a_crash_after_reserving_counts_the_request_as_spent(
 ) -> None:
     """Conservative by design: the spend commits before the request, so a crash can't refund it."""
     ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
-    await ops.create_job("job_d", _spec())
+    await ops.create_job("job_d", _spec(), STORAGE)
     await ledger.open("job_d", total_cap=5, host_caps={HOST: 5})
 
     async def fetch_that_crashes() -> None:
@@ -98,7 +107,7 @@ async def test_database_refuses_overspend_even_without_the_ledger(
     ops_pool: AsyncConnectionPool,
 ) -> None:
     ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
-    await ops.create_job("job_e", _spec())
+    await ops.create_job("job_e", _spec(), STORAGE)
     await ledger.open("job_e", total_cap=1, host_caps={HOST: 1})
     async with ops_pool.connection() as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
@@ -107,7 +116,7 @@ async def test_database_refuses_overspend_even_without_the_ledger(
 
 async def test_job_state_and_attempt_log(ops_pool: AsyncConnectionPool) -> None:
     ops = OpsStore(ops_pool)
-    await ops.create_job("job_f", _spec())
+    await ops.create_job("job_f", _spec(), STORAGE)
     await ops.set_state("job_f", JobState.STOPPED, "budget exhausted")
     assert await ops.job_state("job_f") == (JobState.STOPPED, "budget exhausted")
 
@@ -118,3 +127,50 @@ async def test_job_state_and_attempt_log(ops_pool: AsyncConnectionPool) -> None:
         )
     counts = await ops.attempt_outcomes("job_f")
     assert counts == {Outcome.RATE_LIMITED: 1, Outcome.OK: 1}
+
+
+async def test_charge_spends_what_fits_and_reports_the_rest(ops_pool: AsyncConnectionPool) -> None:
+    """DuckDB's requests are charged after the fact: as far as the caps allow, never past them."""
+    ops, ledger = OpsStore(ops_pool), PostgresLedger(ops_pool)
+    await ops.create_job("job_g", _spec(), STORAGE)
+    await ledger.open("job_g", total_cap=10, host_caps={HOST: 10})
+    assert await ledger.reserve("job_g", HOST)
+    assert await ledger.charge("job_g", HOST, 0) == 0
+    assert await ledger.charge("job_g", HOST, 4) == 0
+    assert await ledger.charge("job_g", HOST, 7) == 2  # 5 fit, 2 did not
+    assert (await ledger.usage("job_g"))[JOB_TOTAL] == (10, 10)
+    assert await ledger.charge("job_g", HOST, 3) == 3
+    assert not await ledger.reserve("job_g", HOST)
+    assert await ledger.charge("job_g", "unknown.example", 2) == 2
+
+
+async def test_attempts_keep_their_client(ops_pool: AsyncConnectionPool) -> None:
+    ops = OpsStore(ops_pool)
+    await ops.create_job("job_h", _spec(), STORAGE)
+    now = datetime.now(UTC)
+    await ops.record(
+        Attempt(job_id="job_h", host=HOST, url="u", attempt=1, started_at=now, outcome=Outcome.OK)
+    )
+    for _ in range(3):
+        await ops.record(
+            Attempt(
+                job_id="job_h",
+                host=HOST,
+                url="https://data.example/index.parquet",
+                attempt=1,
+                started_at=now,
+                outcome=Outcome.OK,
+                bytes=1000,
+                client=RequestClient.DUCKDB,
+            )
+        )
+    assert await ops.attempts_by_client("job_h") == {
+        RequestClient.DUCKDB: 3,
+        RequestClient.STRATA: 1,
+    }
+    async with ops_pool.connection() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                "INSERT INTO ops.fetch_attempts (job_id, host, url, attempt, started_at, outcome,"
+                " client) VALUES ('job_h', 'h', 'u', 1, now(), 'ok', 'curl')"
+            )

@@ -11,16 +11,23 @@ only the files whose range overlaps the domain's SURT range (one of 300 for pyth
 
 Reading a footer costs one ranged request for the last ``TAIL_BYTES`` of the file (a second one
 if the footer is larger). DuckDB then reads the statistics from a file holding only the footer.
+
+Version 2 (week 2) keeps each row group's key range, row count and the compressed size of the
+columns a site query reads, so the cost of a lookup can be estimated, and reserved from a job's
+budget, before DuckDB sends a single request. Maps are kept per crawl and subset: the robots.txt
+captures (``subset=robotstxt``) have their own 300 files.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import struct
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -31,6 +38,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from strata_core.models import Outcome
 from strata_fetch.cc.index import (
+    MERGE_GAP,
+    CostEstimate,
     IndexAttempt,
     IndexBlockedError,
     IndexUnavailableError,
@@ -48,12 +57,53 @@ from strata_fetch.ratelimit import HostGate, Sleep
 
 MAGIC = b"PAR1"
 TAIL_BYTES = 64 * 1024  # most footers fit; a larger one costs one more request
-_MAP_VERSION = 1
+# 3: row groups keep the byte ranges of the columns a query reads (facts), not a request count
+# derived from them, so the estimate can change without re-reading every footer.
+_MAP_VERSION = 3
 Progress = Callable[[int, int], None]  # (footers read so far, footers to read)
+
+# The columns a site query reads (url_host_name included: the host filter needs it). Their
+# compressed sizes per row group are what DuckDB downloads when a lookup touches that row group.
+READ_COLUMNS: tuple[str, ...] = (
+    "url_surtkey",
+    "url",
+    "url_host_name",
+    "fetch_time",
+    "fetch_status",
+    "fetch_redirect",
+    "content_digest",
+    "content_mime_type",
+    "warc_filename",
+    "warc_record_offset",
+    "warc_record_length",
+)
+# Each file DuckDB opens costs a HEAD, a read of its tail and a read of the footer's remainder
+# (measured on a local server, 2026-11-15), before any column chunk.
+REQUESTS_PER_FILE = 3
 
 
 class ShardMapError(IndexUnavailableError):
     """A Parquet footer could not be read, so the shard map can't be completed."""
+
+
+class RowGroup(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    min_key: str | None
+    max_key: str | None
+    rows: int
+    # Sorted (start, end) byte ranges of the READ_COLUMNS chunks in this row group (columns the
+    # file lacks have none). Everything the estimate needs, as read from the footer.
+    spans: list[tuple[int, int]] = []
+
+    @property
+    def bytes(self) -> int:
+        return sum(end - start for start, end in self.spans)
+
+    def covers(self, lo: str, hi: str) -> bool:
+        if self.min_key is None or self.max_key is None:
+            return True
+        return self.min_key < hi and self.max_key >= lo
 
 
 class ShardRange(BaseModel):
@@ -62,12 +112,65 @@ class ShardRange(BaseModel):
     path: str
     min_key: str | None
     max_key: str | None
+    row_groups: list[RowGroup] = []
 
     def covers(self, lo: str, hi: str) -> bool:
         """Whether the file may hold keys in ``[lo, hi)``. Missing statistics mean "maybe"."""
         if self.min_key is None or self.max_key is None:
             return True
         return self.min_key < hi and self.max_key >= lo
+
+
+@functools.cache
+def duckdb_block_size() -> int:
+    """The largest single read DuckDB sends for a remote file; bigger reads are split into reads
+    of this size (`external_file_cache_remote_max_block_size`, 2 MiB in DuckDB 2.0). Read from
+    DuckDB itself, so the estimate follows the installed version."""
+    con = duckdb.connect()
+    try:
+        row = con.execute(
+            "SELECT current_setting('external_file_cache_remote_max_block_size')"
+        ).fetchone()
+    finally:
+        con.close()
+    return int(row[0]) if row else 2 * 1024 * 1024
+
+
+def read_requests(spans: Sequence[tuple[int, int]], block: int, gap: int = MERGE_GAP) -> int:
+    """Requests DuckDB sends to read ``spans`` (sorted byte ranges of one row group): chunks at
+    most ``gap`` apart form one run, a run is read in blocks of ``block`` bytes, plus one read per
+    run for a column DuckDB fetches on its own. Measured on a 1.6-million-row row group: 54
+    requests sent, 55 estimated; the job is refunded the difference afterwards."""
+    total, start, end = 0, None, None
+    for lo, hi in spans:
+        if start is None or end is None or lo - end > gap:
+            if start is not None and end is not None:
+                total += -(-(end - start) // block) + 1
+            start, end = lo, hi
+        else:
+            end = max(end, hi)
+    if start is not None and end is not None:
+        total += -(-(end - start) // block) + 1
+    return total
+
+
+def estimate(
+    ranges: Sequence[ShardRange], spans: Sequence[tuple[str, str]], block: int | None = None
+) -> CostEstimate:
+    block = block or duckdb_block_size()
+    files = groups = rows = requests = size = 0
+    for shard in ranges:
+        hit = [rg for rg in shard.row_groups if any(rg.covers(lo, hi) for lo, hi in spans)]
+        if not hit and not (shard.row_groups == [] and any(shard.covers(*s) for s in spans)):
+            continue
+        files += 1
+        requests += REQUESTS_PER_FILE
+        for rg in hit:
+            groups += 1
+            rows += rg.rows
+            requests += read_requests(rg.spans, block)
+            size += rg.bytes
+    return CostEstimate(files=files, row_groups=groups, rows=rows, requests=requests, bytes=size)
 
 
 # ---------------------------------------------------------------------------- reading tails
@@ -195,6 +298,7 @@ class HttpTail:
                 retry_after_ms=int(retry_after * 1000) if retry_after is not None else None,
                 waited_ms=int(delay * 1000) if delay is not None else None,
                 error=error,
+                charged=False,  # ADR-004: the shard map is shared by every later job
             )
             log.append(record)
             if self._on_attempt is not None:
@@ -241,31 +345,62 @@ async def read_footer(
     return MAGIC + data[-need:], log
 
 
-def footer_stats(footer: bytes, column: str = "url_surtkey") -> tuple[str | None, str | None]:
-    """Minimum and maximum of ``column`` over all row groups; ``(None, None)`` when any row group
-    lacks statistics, because then the file can't be ruled out."""
+def footer_row_groups(
+    footer: bytes, key: str = "url_surtkey", columns: Sequence[str] = READ_COLUMNS
+) -> list[RowGroup]:
+    """Each row group's key range, row count and the byte ranges of ``columns``."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "footer.parquet"
         path.write_bytes(footer)
         con = duckdb.connect()
         try:
-            row = con.execute(
+            rows = con.execute(
                 """
-                SELECT count(*),
-                       count(coalesce(stats_min_value, stats_min)),
-                       count(coalesce(stats_max_value, stats_max)),
-                       min(coalesce(stats_min_value, stats_min)),
-                       max(coalesce(stats_max_value, stats_max))
+                SELECT row_group_id, row_group_num_rows, path_in_schema,
+                       coalesce(stats_min_value, stats_min), coalesce(stats_max_value, stats_max),
+                       dictionary_page_offset, data_page_offset, total_compressed_size
                 FROM parquet_metadata(?)
-                WHERE path_in_schema = ?
+                ORDER BY row_group_id, column_id
                 """,
-                [path.as_posix(), column],
-            ).fetchone()
+                [path.as_posix()],
+            ).fetchall()
         finally:
             con.close()  # before the directory goes: Windows won't delete an open file
-    if row is None or row[0] == 0 or row[1] < row[0] or row[2] < row[0]:
+    wanted = set(columns)
+    groups: dict[int, _Group] = {}
+    for rg, n, name, lo, hi, dict_off, data_off, size in rows:
+        g = groups.setdefault(rg, _Group(rows=int(n)))
+        if name == key:
+            g.lo = None if lo is None else str(lo)
+            g.hi = None if hi is None else str(hi)
+        if name in wanted:
+            starts = [o for o in (dict_off, data_off) if o is not None and o > 0]
+            start = min(starts) if starts else 0
+            g.spans.append((start, start + int(size or 0)))
+    return [
+        RowGroup(min_key=g.lo, max_key=g.hi, rows=g.rows, spans=sorted(g.spans))
+        for g in groups.values()
+    ]
+
+
+@dataclass
+class _Group:
+    rows: int
+    lo: str | None = None
+    hi: str | None = None
+    spans: list[tuple[int, int]] = field(default_factory=list)
+
+
+def footer_stats(footer: bytes, column: str = "url_surtkey") -> tuple[str | None, str | None]:
+    """Minimum and maximum of ``column`` over all row groups; ``(None, None)`` when any row group
+    lacks statistics, because then the file can't be ruled out."""
+    return _span(footer_row_groups(footer, column))
+
+
+def _span(groups: Sequence[RowGroup]) -> tuple[str | None, str | None]:
+    if not groups or any(g.min_key is None or g.max_key is None for g in groups):
         return None, None
-    return str(row[3]), str(row[4])
+    return min(g.min_key for g in groups if g.min_key), max(g.max_key for g in groups if g.max_key)
 
 
 # ---------------------------------------------------------------------------- the map
@@ -280,12 +415,14 @@ class ShardMap:
         reader: TailReader,
         *,
         cache_dir: Path | None = None,
+        subset: str = "warc",
         tail_bytes: int = TAIL_BYTES,
         on_progress: Progress | None = None,
         progress_every: int = 50,
     ) -> None:
         self._reader = reader
         self._dir = cache_dir
+        self.subset = subset
         self._tail = tail_bytes
         self._on_progress = on_progress
         self._every = max(1, progress_every)
@@ -293,10 +430,12 @@ class ShardMap:
 
     async def select(self, crawl: str, files: list[str], lo: str, hi: str) -> ShardSelection:
         ranges, attempts, read = await self.ranges(crawl, files)
+        chosen = [r for r in ranges if r.covers(lo, hi)]
         return ShardSelection(
-            files=[r.path for r in ranges if r.covers(lo, hi)],
+            files=[r.path for r in chosen],
             attempts=attempts,
             footers_read=read,
+            estimate=estimate(chosen, [(lo, hi)]),
         )
 
     async def ranges(
@@ -315,10 +454,11 @@ class ShardMap:
                 raise type(exc)(str(exc), [*attempts, *exc.attempts]) from exc
             attempts += log
             try:
-                lo_key, hi_key = await asyncio.to_thread(footer_stats, footer)
+                groups = await asyncio.to_thread(footer_row_groups, footer)
             except duckdb.Error as exc:
                 raise ShardMapError(f"{path}: unreadable Parquet footer: {exc}", attempts) from exc
-            shard = ShardRange(path=path, min_key=lo_key, max_key=hi_key)
+            lo_key, hi_key = _span(groups)
+            shard = ShardRange(path=path, min_key=lo_key, max_key=hi_key, row_groups=groups)
             self._append(crawl, shard)
             known[path] = shard
             if self._on_progress is not None and (done % self._every == 0 or done == len(missing)):
@@ -327,7 +467,9 @@ class ShardMap:
 
     # -- cache ---------------------------------------------------------------------------------
     def _path(self, crawl: str) -> Path | None:
-        return None if self._dir is None else self._dir / "shardmaps" / f"{crawl}.jsonl"
+        if self._dir is None:
+            return None
+        return self._dir / "shardmaps" / f"{crawl}.{self.subset}.jsonl"
 
     def _load(self, crawl: str) -> dict[str, ShardRange]:
         if crawl in self._memory:
@@ -357,7 +499,9 @@ class ShardMap:
         new = not path.exists()
         with path.open("a", encoding="utf-8") as fh:
             if new:
-                fh.write(json.dumps({"v": _MAP_VERSION, "crawl": crawl}) + "\n")
+                fh.write(
+                    json.dumps({"v": _MAP_VERSION, "crawl": crawl, "subset": self.subset}) + "\n"
+                )
             fh.write(shard.model_dump_json() + "\n")
 
 

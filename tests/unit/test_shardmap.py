@@ -44,7 +44,7 @@ def write_keys(path: Path, keys: list[str]) -> Path:
 def three_shards(tmp_path: Path) -> list[str]:
     return [
         write_keys(tmp_path / "a.parquet", ["com,acme)/", "com,acme)/x"]).as_posix(),
-        write_keys(tmp_path / "b.parquet", ["org,example)/", "org,example,www)/b"]).as_posix(),
+        write_keys(tmp_path / "b.parquet", ["org,example)/", "org,example,docs)/b"]).as_posix(),
         write_keys(tmp_path / "c.parquet", ["org,examples)/", "org,zzz)/"]).as_posix(),
     ]
 
@@ -76,7 +76,7 @@ async def no_sleep(_: float) -> None:
 async def test_a_footer_alone_gives_the_files_key_range(three_shards: list[str]) -> None:
     footer, attempts = await read_footer(LocalTail(), three_shards[1])
     assert footer.startswith(b"PAR1") and footer.endswith(b"PAR1")
-    assert footer_stats(footer) == ("org,example)/", "org,example,www)/b")
+    assert footer_stats(footer) == ("org,example)/", "org,example,docs)/b")
     assert attempts == []
 
 
@@ -139,7 +139,7 @@ async def test_one_suffix_range_request_reads_a_remote_footer(served: FakeCommon
         footer, attempts = await read_footer(
             tails(client, on_attempt=on_attempt), served.base_url + SHARD_PATH.lstrip("/")
         )
-    assert footer_stats(footer) == ("org,example)/", "org,example,www)/b")
+    assert footer_stats(footer) == ("org,example)/", "org,example,docs)/b")
     assert [r[2] for r in served.requests] == ["bytes=-65536"]
     assert [a.outcome for a in attempts] == [Outcome.OK] and seen == attempts
 
@@ -151,7 +151,7 @@ async def test_a_large_remote_footer_takes_an_explicit_second_range(
         footer, attempts = await read_footer(
             tails(client), served.base_url + SHARD_PATH.lstrip("/"), tail_bytes=64
         )
-    assert footer_stats(footer) == ("org,example)/", "org,example,www)/b")
+    assert footer_stats(footer) == ("org,example)/", "org,example,docs)/b")
     first, second = [r[2] for r in served.requests]
     assert first == "bytes=-64" and second is not None and not second.startswith("bytes=-")
     assert len(attempts) == 2
@@ -217,10 +217,10 @@ async def test_the_map_is_cached_per_crawl_and_resumes_after_an_interruption(
 async def test_a_map_from_another_format_version_is_rebuilt(
     three_shards: list[str], tmp_path: Path
 ) -> None:
-    path = tmp_path / "cache" / "shardmaps" / f"{CRAWL}.jsonl"
+    path = tmp_path / "cache" / "shardmaps" / f"{CRAWL}.warc.jsonl"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"v": 0, "crawl": CRAWL}) + "\n", encoding="utf-8")
+    path.write_text(json.dumps({"v": 2, "crawl": CRAWL}) + "\n", encoding="utf-8")
     reader = CountingTail()
     await ShardMap(reader, cache_dir=tmp_path / "cache").ranges(CRAWL, three_shards)
     assert len(reader.tails) == 3
-    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["v"] == 1
+    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["v"] == 3

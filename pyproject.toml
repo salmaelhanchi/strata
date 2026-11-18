@@ -25,6 +25,7 @@ dev = [
     "pytest-socket>=0.8",
     "pytest-httpserver>=1.1",
     "hypothesis>=6.150",
+    "moto[server]>=5.1",
     "ruff>=0.15",
     "mypy>=2.0",
     "pre-commit>=4.0",
@@ -55,7 +56,7 @@ packages = ["strata_core", "strata_fetch", "strata_cli"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["warcio.*"]
+module = ["warcio.*", "boto3.*", "botocore.*", "protego.*", "moto.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

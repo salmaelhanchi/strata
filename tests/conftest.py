@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import psycopg
 import pytest
 from psycopg import sql
@@ -26,6 +27,7 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 from strata_core.db import migrate
+from strata_core.settings import Settings
 
 if sys.platform == "win32":
 
@@ -53,6 +55,16 @@ def _run_as_kwargs() -> dict[str, Any]:
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return {"user": "postgres", "group": "postgres"}
     return {}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests see only the settings they set: no STRATA_* variables from the shell and no .env
+    file from the working folder (a developer's .env may point at real services)."""
+    for name in list(os.environ):
+        if name.startswith("STRATA_") and name != "STRATA_TEST_PG_DSN":
+            monkeypatch.delenv(name)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
 
 
 @pytest.fixture(scope="session")
@@ -127,3 +139,53 @@ async def ops_pool(pg_dsn: str) -> AsyncIterator[AsyncConnectionPool]:
     await migrate(pg_dsn)
     async with AsyncConnectionPool(pg_dsn, min_size=1, max_size=20, open=False) as pool:
         yield pool
+
+
+@pytest.fixture(scope="session")
+def httpfs() -> None:
+    """DuckDB's httpfs extension, for tests that read Parquet over HTTP from a local server.
+
+    DuckDB installs it on first use where it can reach its extension repository (CI does);
+    elsewhere these tests are skipped.
+    """
+    con = duckdb.connect()
+    try:
+        con.execute("LOAD httpfs")
+    except duckdb.Error:
+        try:
+            con.execute("INSTALL httpfs")
+            con.execute("LOAD httpfs")
+        except duckdb.Error:
+            pytest.skip("DuckDB's httpfs extension can't be installed here")
+    finally:
+        con.close()
+
+
+@pytest.fixture(scope="session")
+def s3_endpoint() -> Iterator[str]:
+    """An in-process S3 server (moto) for the object-store code: the same boto3 calls RustFS
+    and AWS answer, with SHA-256 checksums verified on upload."""
+    from moto.server import ThreadedMotoServer
+
+    server = ThreadedMotoServer(ip_address="127.0.0.1", port=_free_port(), verbose=False)
+    server.start()
+    host, port = server.get_host_and_port()
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.stop()
+
+
+@pytest.fixture
+def s3_settings(s3_endpoint: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Settings for a fresh bucket on the moto server, as STRATA_* environment variables."""
+    env = {
+        "STRATA_RAW_STORE": "s3",
+        "STRATA_S3_ENDPOINT": s3_endpoint,
+        "STRATA_S3_ACCESS_KEY": "test",
+        "STRATA_S3_SECRET_KEY": "test-secret",
+        "STRATA_S3_RAW_BUCKET": f"raw-{uuid.uuid4().hex[:10]}",
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    return env

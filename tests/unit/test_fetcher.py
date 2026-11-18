@@ -14,7 +14,7 @@ from strata_core.ids import capture_id
 from strata_core.ledger import JOB_TOTAL, BudgetExhaustedError, MemoryLedger
 from strata_core.models import BlobRef, Outcome, Source, Verification
 from strata_core.ops import MemoryAttemptLog
-from strata_fetch.blobstore import LocalBlobStore, RawWarcWriter
+from strata_fetch.blobstore import LocalBlobStore, PartWriter
 from strata_fetch.fetcher import FetchContext, HostBlockedError, fetch_capture
 from strata_fetch.ratelimit import HostGate
 from strata_fetch.warc import verify_record
@@ -65,8 +65,8 @@ async def rig(httpserver: HTTPServer, tmp_path: Path) -> AsyncIterator[Rig]:
             gate=gate,
             ledger=ledger,
             attempts=log,
-            raw=RawWarcWriter(store, JOB),
-            quarantine=RawWarcWriter(store, f"quarantine/{JOB}"),
+            raw=PartWriter(tmp_path / "raw", store, JOB),
+            quarantine=PartWriter(tmp_path / "raw", store, f"quarantine/{JOB}"),
             job_id=JOB,
             data_base=fake.base_url,
             backoff=(0.01, 0.01, 0.01, 0.01),

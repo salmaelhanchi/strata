@@ -1,0 +1,67 @@
+{
+  "store": "rustfs",
+  "endpoint": "http://localhost:19000",
+  "bucket": "strata-spike-7f7be3",
+  "checks": [
+    {
+      "name": "bucket",
+      "required": true,
+      "passed": true,
+      "ms": 93,
+      "detail": "created; Server: ?"
+    },
+    {
+      "name": "range-get",
+      "required": true,
+      "passed": true,
+      "ms": 92,
+      "detail": "middle and suffix ranges exact; Content-Range correct"
+    },
+    {
+      "name": "multipart",
+      "required": true,
+      "passed": true,
+      "ms": 297,
+      "detail": "2 parts, 6 MiB; range across the part boundary exact"
+    },
+    {
+      "name": "duckdb-s3",
+      "required": true,
+      "passed": true,
+      "ms": 1625,
+      "detail": "wrote 100k rows, filtered read exact; the read took 3 request(s)"
+    },
+    {
+      "name": "ducklake-s3",
+      "required": true,
+      "passed": true,
+      "ms": 1937,
+      "detail": "100 rows in 4 flushes; CHECKPOINT: active files 4 -> 1, objects on the store 4 -> 5"
+    },
+    {
+      "name": "checksums",
+      "required": false,
+      "passed": true,
+      "ms": 31,
+      "detail": "PUT with boto3's default CRC32 checksum accepted"
+    },
+    {
+      "name": "sha256",
+      "required": false,
+      "passed": true,
+      "ms": 47,
+      "detail": "stored and returned on HEAD"
+    },
+    {
+      "name": "put-if-absent",
+      "required": false,
+      "passed": true,
+      "ms": 14,
+      "detail": "second PUT refused with 412"
+    }
+  ],
+  "server_header": null,
+  "duckdb_version": "2.0.0",
+  "python": "3.12.12",
+  "started_at": "2026-11-08T15:46:45+00:00"
+}
