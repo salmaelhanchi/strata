@@ -99,7 +99,7 @@ def profile(
         raise typer.Exit(1) from exc
     if html is not None:
         html.parent.mkdir(parents=True, exist_ok=True)
-        html.write_text(render(result), encoding="utf-8")
+        html.write_text(render(result), encoding="utf-8", newline="\n")
     if as_json:
         print_json(result)
         return
