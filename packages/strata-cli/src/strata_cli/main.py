@@ -715,7 +715,8 @@ def _print_summary(s: JobSummary) -> None:
             if s.verdicts
             else ""
         )
-        + f"\n  budget: {s.budget_spent}/{s.budget_cap}; bytes stored: {s.bytes_stored}"
+        + f"\n  budget: {s.budget_spent}/{s.budget_cap};"
+        f" bytes downloaded (index reads included): {s.bytes_stored:,}"
         + f"\n  busiest second: {s.peak_requests_per_second} request(s) to one host;"
         f" rows in lake: {s.rows_in_lake}"
     )

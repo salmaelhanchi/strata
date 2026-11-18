@@ -11,7 +11,14 @@ from psycopg_pool import AsyncConnectionPool
 
 from strata_core.db import migrate
 from strata_core.ledger import JOB_TOTAL, PostgresLedger
-from strata_core.models import Attempt, CrawlSpec, JobState, Outcome, RequestClient
+from strata_core.models import (
+    Attempt,
+    CrawlSpec,
+    JobState,
+    Outcome,
+    PolicyVerdict,
+    RequestClient,
+)
 from strata_core.ops import OpsStore
 
 pytestmark = pytest.mark.postgres
@@ -174,3 +181,19 @@ async def test_attempts_keep_their_client(ops_pool: AsyncConnectionPool) -> None
                 "INSERT INTO ops.fetch_attempts (job_id, host, url, attempt, started_at, outcome,"
                 " client) VALUES ('job_h', 'h', 'u', 1, now(), 'ok', 'curl')"
             )
+
+
+async def test_a_rerun_replaces_its_robots_decisions(ops_pool: AsyncConnectionPool) -> None:
+    """Seen live: a run whose robots.txt lookup failed saved needs_review for every candidate,
+    and the run that finished the job could not replace them."""
+    ops = OpsStore(ops_pool)
+    await ops.create_job("job_d", _spec(), STORAGE)
+    url, cid = "https://example.org/a", "c" * 64
+    await ops.save_decisions(
+        "job_d", [(url, "example.org", PolicyVerdict.NEEDS_REVIEW, None, cid, False)]
+    )
+    await ops.save_decisions(
+        "job_d", [(url, "example.org", PolicyVerdict.ALLOWED, "r" * 64, cid, True)]
+    )
+    assert await ops.verdicts("job_d") == {PolicyVerdict.ALLOWED: 1}
+    assert await ops.selected_capture_ids("job_d") == [cid]

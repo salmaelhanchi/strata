@@ -74,6 +74,31 @@ def rfc_page(
 </div></main></body></html>"""
 
 
+def rfc_info_page(
+    number: int,
+    title: str,
+    *,
+    status: str = "Best Current Practice",
+    published: str = "2004/01/30",
+    authors: tuple[str, ...] = ("A. Writer", "B. Editor"),
+    series: str = "BCP 99",
+) -> str:
+    """The redesigned info page: no visible date or author labels, the series name inside the
+    heading, and Highwire ``citation_*`` tags in the head carrying title, date and authors."""
+    tags = "".join(f'<meta name="citation_author" content="{a}">' for a in authors)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>RFC {number}: {title} | RFC Editor</title>
+<meta property="og:type" content="article">{tags}
+<meta name="citation_publication_date" content="{published}">
+<meta name="citation_title" content="{title}"></head>
+<body><nav>The RFC Series</nav><main>
+<h1>RFC {number}: {series}: {title}</h1>
+<p>IANA</p><p>{", ".join(authors)}</p><p>{status}</p>
+<p>Network Working Group ... <time datetime="1999-03">March 1999</time></p>
+<h2>Contents About this RFC Errata Participate</h2>
+</main></body></html>"""
+
+
 def peps_json(entries: dict[int, dict[str, str]]) -> bytes:
     return json.dumps(
         {
@@ -91,11 +116,14 @@ def peps_json(entries: dict[int, dict[str, str]]) -> bytes:
     ).encode()
 
 
-def rfc_index_entry(n: int, title: str, authors: str, when: str, status: str) -> str:
+def rfc_index_entry(
+    n: int, title: str, authors: str, when: str, status: str, *, padded: bool = True
+) -> str:
     """An entry wrapped at 72 columns, continuation lines indented five spaces, as the file
-    does."""
+    does. Older copies zero-pad the number (``0019``); the current one doesn't (``19``)."""
+    number = f"{n:04d}" if padded else str(n)
     words = (
-        f"{n:04d} {title}. {authors}. {when}. (Format: TXT, HTML) (Status: {status})"
+        f"{number} {title}. {authors}. {when}. (Format: TXT, HTML) (Status: {status})"
         f" (DOI: 10.17487/RFC{n:04d})"
     ).split()
     lines, line = [], ""

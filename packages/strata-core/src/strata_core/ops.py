@@ -236,7 +236,11 @@ class OpsStore:
             await cur.executemany(
                 "INSERT INTO ops.policy_decisions (job_id, url, host, verdict, robots_capture_id,"
                 " capture_id, selected) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-                " ON CONFLICT (job_id, url) DO NOTHING",
+                # A rerun records its own decision and the evidence it rests on.
+                " ON CONFLICT (job_id, url) DO UPDATE SET verdict = EXCLUDED.verdict,"
+                " robots_capture_id = EXCLUDED.robots_capture_id,"
+                " capture_id = EXCLUDED.capture_id, selected = EXCLUDED.selected,"
+                " decided_at = now()",
                 [
                     (job_id, url, host, v.value, rid, cid, selected)
                     for url, host, v, rid, cid, selected in rows

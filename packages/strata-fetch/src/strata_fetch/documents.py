@@ -69,6 +69,7 @@ class _Text(HTMLParser):
         self._skip = 0
         self._in_h1 = False
         self._h1: list[str] = []
+        self.meta: dict[str, list[str]] = {}
 
     def _break(self) -> None:
         line = normalize_space("".join(self._buf))
@@ -77,6 +78,11 @@ class _Text(HTMLParser):
         self._buf = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "meta":
+            a = dict(attrs)
+            key, content = a.get("name") or a.get("property"), a.get("content")
+            if key and content:
+                self.meta.setdefault(key.casefold(), []).append(normalize_space(content))
         if tag in self.SKIP:
             self._skip += 1
         elif tag in self.BLOCK:
@@ -103,11 +109,16 @@ class _Text(HTMLParser):
             self._h1.append(data)
 
 
-def page_text(html: str) -> tuple[list[str], list[str]]:
+def _parse(html: str) -> _Text:
     parser = _Text()
     parser.feed(html)
     parser.close()
     parser._break()
+    return parser
+
+
+def page_text(html: str) -> tuple[list[str], list[str]]:
+    parser = _parse(html)
     return parser.lines, parser.headings
 
 
@@ -177,16 +188,26 @@ def _rfc_status(lines: Sequence[str]) -> str | None:
 
 
 def extract_rfc(url: str, html: str) -> Extracted:
-    lines, headings = page_text(html)
+    """Title, date and authors from the page's ``citation_*`` tags (Highwire Press metadata,
+    which the redesigned info pages carry; their visible header has no date any more), falling
+    back to the visible layout. The status is read from the visible header either way."""
+    page = _parse(html)
+    lines, meta = page.lines, page.meta
     number = parse_rfc_number(url)
-    title = None
-    for line in [*headings, *lines]:
-        m = re.match(r"^RFC\s*0*(\d+)\s*:\s*(.+)$", line)
-        if m and (number is None or int(m.group(1)) == number):
-            title = m.group(2)
-            break
-    published = parse_date(labelled(lines, "Date published") or "")
-    authors = labelled(lines, "Authors") or labelled(lines, "Author")
+    title = next(iter(meta.get("citation_title", [])), None)
+    if title is None:
+        for line in [*page.headings, *lines]:
+            m = re.match(r"^RFC\s*0*(\d+)\s*:\s*(.+)$", line)
+            if m and (number is None or int(m.group(1)) == number):
+                title = m.group(2)
+                break
+    tagged = next(iter(meta.get("citation_publication_date", [])), None)
+    published = parse_date(tagged.replace("/", "-") if tagged else "") or parse_date(
+        labelled(lines, "Date published") or ""
+    )
+    authors = meta.get("citation_author") or people(
+        labelled(lines, "Authors") or labelled(lines, "Author") or ""
+    )
     return Extracted(
         kind="rfc",
         number=number,
@@ -194,8 +215,8 @@ def extract_rfc(url: str, html: str) -> Extracted:
         status=_rfc_status(lines),
         date=published.value if published else None,
         date_precision=published.precision if published else None,
-        authors=people(authors) if authors else [],
-        extractor="rfc-info-html/1",
+        authors=list(authors),
+        extractor="rfc-info-html/2",
     )
 
 
@@ -284,7 +305,7 @@ def parse_peps_json(data: bytes) -> dict[int, OracleEntry]:
     return out
 
 
-_ENTRY = re.compile(r"^(\d{4,5}) (.*)$")
+_ENTRY = re.compile(r"^(\d{1,5}) (.*)$")  # "19 ..." and "0019 ..." both occur
 _DATE = re.compile(
     r"\b(?:\d{1,2} )?(?:January|February|March|April|May|June|July|August|September|October"
     r"|November|December) \d{4}\b"
@@ -292,8 +313,9 @@ _DATE = re.compile(
 
 
 def parse_rfc_index(text: str) -> dict[int, OracleEntry]:
-    """``rfc-index.txt``: one entry per RFC, starting with its zero-padded number at the start
-    of a line and continuing on indented lines; ``Not Issued.`` entries are skipped."""
+    """``rfc-index.txt``: one entry per RFC, starting with its number (zero-padded in older
+    copies) at the start of a line and continuing on indented lines; ``Not Issued.`` entries
+    are skipped."""
     entries: dict[int, list[str]] = {}
     current: int | None = None
     for line in text.splitlines():
@@ -444,7 +466,7 @@ def agreement(
             ok = bool(doc.title) and title_key(text).startswith(title_key(doc.title or "") + ".")
             check(doc, "title", ok, doc.title, text[:80])
         check(doc, "status", doc.status == oracle.status, doc.status, oracle.status)
-        check(doc, "date", doc.date == oracle.date, doc.date, oracle.date)
+        check(doc, "date", same_date(doc.date, oracle.date), doc.date, oracle.date)
         if oracle.authors:
             ours = {person_key(a) for a in doc.authors}
             theirs = {person_key(a) for a in oracle.authors}
@@ -455,6 +477,15 @@ def agreement(
         fields={k: FieldAgreement(compared=c, agreed=a) for k, (c, a) in sorted(counts.items())},
         disagreements=shown,
     )
+
+
+def same_date(a: str | None, b: str | None) -> bool:
+    """ISO dates agree at the precision both have: the RFC index dates most RFCs to the month
+    ("2022-10"), the page's metadata to the day ("2022-10-20")."""
+    if a is None or b is None:
+        return False
+    n = min(len(a), len(b))
+    return a[:n] == b[:n]
 
 
 def _same(a: str | None, b: str | None) -> bool:

@@ -1,4 +1,4 @@
-"""Extractors, the publishers' indexes and their agreement (week 2, S16)."""
+"""Extractors, the publishers' indexes and their agreement."""
 
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ from strata_fetch.documents import (
     page_text,
     parse_peps_json,
     parse_rfc_index,
+    same_date,
 )
 from tests.fakecc import build_record
-from tests.pages import pep_page, peps_json, rfc_index_entry, rfc_page
+from tests.pages import pep_page, peps_json, rfc_index_entry, rfc_info_page, rfc_page
 
 PEP_URL = "https://peps.python.org/pep-0457/"
 RFC_URL = "https://www.rfc-editor.org/info/rfc4767/"
@@ -50,6 +51,22 @@ def test_rfc_extractor_reads_the_unlabelled_status() -> None:
     assert got.status == "experimental"
     assert (got.date, got.date_precision) == ("2007-03", "month")
     assert got.authors == ["A. Writer", "B. Editor"]
+
+
+def test_rfc_extractor_reads_the_citation_tags_of_the_redesigned_page() -> None:
+    got = extract_rfc(RFC_URL, rfc_info_page(4767, "Numbers Considered Useful"))
+    assert got.title == "Numbers Considered Useful"  # not "BCP 99: Numbers ..." from the h1
+    assert (got.date, got.date_precision) == ("2004-01-30", "day")  # not a reference's date
+    assert got.authors == ["A. Writer", "B. Editor"]
+    assert got.status == "best_current_practice"
+    assert got.extractor == "rfc-info-html/2"
+
+
+def test_dates_agree_at_the_precision_both_sides_have() -> None:
+    assert same_date("2004-01-30", "2004-01")
+    assert same_date("2009-04-01", "2009-04-01")
+    assert not same_date("2004-02-01", "2004-01")
+    assert not same_date(None, "2004-01")
 
 
 def test_extractors_are_chosen_by_url_shape() -> None:
@@ -88,6 +105,9 @@ def test_rfc_index_entries_span_lines_and_not_issued_ones_are_skipped() -> None:
             ),
             "0008 Not Issued.",
             rfc_index_entry(
+                19, "An Early Note", "D. Early", "October 1969", "UNKNOWN", padded=False
+            ),
+            rfc_index_entry(
                 5000,
                 "A Title Mentioning June 1999 Inside",
                 "C. Author",
@@ -97,7 +117,8 @@ def test_rfc_index_entries_span_lines_and_not_issued_ones_are_skipped() -> None:
         ]
     )
     rfcs = parse_rfc_index(text)
-    assert set(rfcs) == {4767, 5000}
+    assert set(rfcs) == {19, 4767, 5000}
+    assert rfcs[19].date == "1969-10"  # the current file doesn't zero-pad numbers below 1000
     assert (rfcs[4767].status, rfcs[4767].date) == ("experimental", "2007-03")
     assert rfcs[5000].date == "2009-04-01"  # the last date before "(Format", not the title's
     assert rfcs[4767].text and rfcs[4767].text.startswith("The Example Exchange Protocol (EXP).")
