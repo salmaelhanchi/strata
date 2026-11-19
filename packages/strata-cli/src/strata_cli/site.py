@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 import typer
 
 from strata_cli.common import (
@@ -27,14 +26,15 @@ from strata_cli.output import (
     print_rates,
     shard_progress,
 )
-from strata_core.settings import Settings
+from strata_core.sinks import describe, open_sink
 from strata_fetch.cc.attempts import IndexBlockedError, IndexQueryError, IndexUnavailableError
 from strata_fetch.cc.columnar import IndexBudgetError
 from strata_fetch.cc.crawls import list_crawls
 from strata_services.budget import RequestBudget
-from strata_services.changes import ChangeRates, ChangeService, SiteDiff
+from strata_services.changes import ChangeRates, ChangeService, SiteDiff, change_rows
 from strata_services.profile import SiteProfile
 from strata_services.profile_html import render
+from strata_services.runtime import newest_crawls
 from strata_services.wiring import change_service, site_profiler
 
 SiteArg = Annotated[str, typer.Argument(help="Host or domain, with its subdomains")]
@@ -112,13 +112,6 @@ Newest = Callable[[int], Awaitable[list[str]]]  # the n newest crawl ids
 IndexErrors = (IndexBlockedError, IndexQueryError, IndexUnavailableError, IndexBudgetError)
 
 
-async def _newest_crawls(client: httpx.AsyncClient, settings: Settings, n: int) -> list[str]:
-    listed = await list_crawls(
-        client, index_gate(), index_base=settings.cc_index_base, cache_dir=settings.cache_dir
-    )
-    return [str(c["id"]) for c in listed[:n]]
-
-
 def _run_or_exit[T](what: str, coro: Coroutine[Any, Any, T], spend: RequestBudget) -> T:
     try:
         return run_sync(coro)
@@ -140,7 +133,7 @@ def _with_changes[T](
             service = change_service(
                 settings, client, data_gate(), spend, on_shard_progress=shard_progress
             )
-            return await body(service, lambda n: _newest_crawls(client, settings, n))
+            return await body(service, lambda n: newest_crawls(settings, client, n))
 
     return go, spend
 
@@ -155,6 +148,12 @@ def diff(
         str | None, typer.Option("--to", help="Later crawl id (default: the newest)")
     ] = None,
     show: Annotated[int, typer.Option(min=0, help="Changed URLs to list")] = 10,
+    into: Annotated[
+        str | None,
+        typer.Option(
+            "--into", help="Also write the changes to a table named strata_site_changes there"
+        ),
+    ] = None,
     budget: Annotated[int, typer.Option(min=1, help="Maximum requests")] = PROFILE_BUDGET,
     threads: ThreadsOpt = None,
     as_json: JsonOpt = False,
@@ -172,6 +171,13 @@ def diff(
 
     go, spend = _with_changes(threads, budget, body)
     result = _run_or_exit("diff", go(), spend)
+    if into is not None:
+        sink = open_sink(into)
+        try:
+            written = sink.write_changes(change_rows(result))
+        finally:
+            sink.close()
+        typer.echo(f"{written:,} change(s) written to {describe(into)}", err=True)
     print_json(result) if as_json else print_diff(result, show=show)
 
 

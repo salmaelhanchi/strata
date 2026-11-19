@@ -7,12 +7,12 @@ contains and what its robots.txt allows, and pulls the pages you need from Commo
 instead of from the site, with proof of where every row came from. It's a helper for scraping
 projects, not a scraper.
 
-> Status: **site profiles, crawl-to-crawl diffs and change rates work** (from the index only,
-> no database needed), and **Gate 1 passed**: one targets file turns two public documentation
-> sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for every page, raw
-> WARC parts and lake files on an S3-compatible store, a run that survives being killed, and one
-> query that proves every row. Export into your own database, a Python SDK, a web console and an
-> MCP server come next.
+> Status: **site profiles, crawl-to-crawl diffs and change rates** (from the index only, no
+> database needed), **`pull` into your own Postgres, SQLite, DuckDB or Parquet** with lineage on
+> every row, and a **Python SDK** all work. **Gate 1 passed**: one targets file turns two public
+> documentation sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for
+> every page, raw WARC parts and lake files on an S3-compatible store, a run that survives being
+> killed, and one query that proves every row. A web console and an MCP server come next.
 
 ## Before you scrape: profile, diff, changes
 
@@ -81,6 +81,74 @@ every re-captured `/info/rfcN/` page did. That page embeds something that differ
 capture, so its digest says nothing about the RFC. Track changes on the RFC text, not the info
 page. The same command on peps.python.org found 25 of 40 re-captured PEPs changed: PEPs are
 living documents.
+
+## Pull pages into your own database
+
+Three commands, from a fresh Postgres to a query (Strata's own stack from the quickstart running):
+
+```powershell
+docker run -d --name mydb -p 5433:5432 -e POSTGRES_PASSWORD=demo postgres:16
+uv run strata pull rfc-editor.org --pattern '^https://www\.rfc-editor\.org/rfc/rfc[0-9]+\.html$' --limit 25 --into postgresql://postgres:demo@localhost:5433/postgres
+docker exec mydb psql -U postgres -c "SELECT url, title, length(main_text) FROM strata_pages"
+```
+
+The real run of the second command, against `CC-MAIN-2026-43`:
+
+```text
+job job_20261119T072341Z_a849f903: succeeded
+  rfc-editor.org in CC-MAIN-2026-43: 25 distinct page(s) (from cache, 0 requests, via columnar)
+  outcomes: ok=25; rows written: 25
+  budget: 27/150; rate-limited attempts: 2
+  stored 798880 B; run took 27.0 s, pages fetched at 1.043 req/s
+  target rfc-editor.org: 25/25 row(s); 319 candidate(s), 100 allowed by robots.txt (parsed: 1 host(s))
+pulled 25 of 25 selected page(s) into postgresql://postgres@localhost:5433/postgres (table
+strata_pages); main text found for 25; languages: - 17, en 8
+```
+
+25 pages in 47 seconds, end to end: 25 range requests plus 2 retries after Common Crawl answered
+503, every record verified against the index, robots.txt checked first. The site catalog was
+already cached by `strata profile`, so the index cost nothing. And the query:
+
+```text
+       page       |                      title                       | chars  | links
+------------------+--------------------------------------------------+--------+-------
+ rfc/rfc1180.html | A TCP/IP Tutorial                                |  63404 |     3
+ rfc/rfc1795.html | Data Link Switching: Switch-to-Switch Protocol A | 213179 |     3
+ rfc/rfc2046.html | Multipurpose Internet Mail Extensions (MIME) Par | 105100 |    21
+ rfc/rfc2224.html | NFS URL Scheme                                   |  22483 |    11
+```
+
+`strata_pages(url, crawl, captured_at, http_status, title, main_text, lang, out_links,
+payload_sha1, warc_ref, robots_verdict, capture_id, job_id, normalizer_version)`, keyed on
+`(url, crawl)`. Main text comes from trafilatura with the navigation stripped; the 17 older RFCs
+are plain-text conversions with no `<title>`, so their titles come from their headings. Running
+the same pull again continued nothing (the job had succeeded), fetched nothing, and rewrote the
+25 rows in place. Any row leads back to its bytes: `strata lineage <capture_id>`.
+
+`--into` takes `postgresql://…` (or `dbname=… host=…`), `sqlite:///pages.db`,
+`duckdb:///pages.duckdb` or `parquet:///folder`. `strata diff SITE --into …` writes
+`strata_site_changes(url, from_crawl, to_crawl, change)` to the same places.
+
+### From Python
+
+```python
+from strata_services import Strata
+
+strata = Strata()
+pages = strata.pages(
+    "rfc-editor.org", pattern=r"^https://www\.rfc-editor\.org/rfc/rfc[0-9]+\.html$", limit=5
+)
+for page in pages:
+    print(page.url, "|", page.title)
+con = pages.to_duckdb()  # a strata_pages table in an in-memory DuckDB
+frame = pages.to_pandas()  # if pandas is installed
+diff = strata.diff("peps.python.org")
+```
+
+Run against the pages above, it returned five titled pages without fetching any (all five were
+already in the lake), and `diff` compared peps.python.org's two newest crawls from the cached
+catalogs: 198 added, 167 removed, 3 changed, 12 the same, 0 requests. `profile` and `diff` need no
+database; `pages` runs a pull job, so it needs Strata's ops Postgres like the CLI.
 
 ## Gate 1 and the job engine
 
@@ -259,7 +327,8 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | --- | --- |
 | `strata crawls` | Newest Common Crawl crawl ids (cached for a day) |
 | `strata profile SITE [--crawls N] [--html FILE]` | Pages per crawl, URL shapes, statuses, MIME types, languages, hosts, path depth and robots.txt (rules, sitemaps, what it allows of each shape), from the index only; an HTML report on request; needs no database |
-| `strata diff SITE [--from A] [--to B]` | Added, removed and changed pages between two crawls, from the index's payload digests; no page fetched; needs no database |
+| `strata diff SITE [--from A] [--to B] [--into TARGET]` | Added, removed and changed pages between two crawls, from the index's payload digests; no page fetched; needs no database |
+| `strata pull SITE --into TARGET [--pattern R] [--limit N]` | A job (budget, robots.txt, verified records, crash-resume), then title, main text, language and links with lineage, upserted into `strata_pages` in Postgres, SQLite, DuckDB or Parquet |
 | `strata changes SITE [--crawls N]` | How often each URL shape changed between consecutive crawls: what is worth re-scraping; needs no database |
 | `strata count SITE --pattern REGEX [--crawl C]` | A site's eligible pages in a crawl, how many URLs match the pattern in full, URL shapes, and the cost estimated before the query; needs no database |
 | `strata discover --domain D [--crawl C] [--limit N] [--index auto\|cdx\|columnar]` | One newest capture per distinct page, with any failed index request listed; needs no database |
@@ -287,7 +356,7 @@ with its own HTTP client; its requests are read back from DuckDB's log, stored w
 [ADR-004](docs/adr/004-index-sources.md) and the list of
 [Common Crawl caveats](docs/common-crawl.md) behind it.
 
-Add `--json` to `profile`, `diff`, `changes`, `discover`, `count`, `run cc`, `resume`, `gate1 run`, `report` and `lineage` for machine-readable output. Settings
+Add `--json` to `profile`, `diff`, `changes`, `pull`, `discover`, `count`, `run cc`, `resume`, `gate1 run`, `report` and `lineage` for machine-readable output. Settings
 come from `STRATA_*` environment variables or a `.env` file ([.env.example](.env.example)).
 Logs go to stderr with a `run_id` on every line (and the `job_id` inside a job); set
 `STRATA_LOG_LEVEL=info` to see job, index-query and sealing events, `STRATA_LOG_FORMAT=json` for
@@ -326,11 +395,12 @@ uv run pytest
 ```
 packages/
   strata-core/    models, deterministic ids, settings, migrations, ops store, budget ledger, lake,
-                  normalizers
+                  sinks (Postgres, SQLite, DuckDB, Parquet), normalizers, logs
   strata-fetch/   adapters: Common Crawl index sources (cc/: CDX, URL index, site catalog, shard
                   map), rate gate, fetcher, WARC checks, blob stores (local, S3), robots.txt,
                   jobs and resume, documents, gate
-  strata-services/ use cases every interface calls: profile, diff, changes; their wiring
+  strata-services/ use cases every interface calls: profile, diff, changes, pull; the page
+                  normalizer; the SDK (`Strata`); their wiring
   strata-cli/     Typer CLI: parses, calls a service or a job, prints
 tests/            unit, integration (Postgres, DuckLake, S3, crash-resume), fake Common Crawl
 deploy/           docker compose (Postgres 16, RustFS), the CLI's Dockerfile; spike/ checks

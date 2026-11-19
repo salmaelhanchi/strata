@@ -23,8 +23,11 @@ strata-cli, console, MCP, SDK  ->  strata-services  ->  strata-fetch  ->  strata
                                                                            stores)
 ```
 
-- `strata-services` holds the use cases (`profile` now; `diff`, `changes`, `pull` next), the
-  models they return and `wiring.py`, the one place adapters are built from settings.
+- `strata-services` holds the use cases (`profile`, `diff`, `changes`, `pull`), the models they
+  return, the SDK (`Strata`), `runtime.py` (event loop, HTTP client, host gates, the engine
+  opened around a body of work) and `wiring.py`, the one place adapters are built from settings.
+- Sinks (the user's Postgres, SQLite, DuckDB or Parquet) live in `strata-core` next to the other
+  stores, behind one protocol (`write_pages`, `write_changes`).
 - A service receives its adapters through its constructor as small protocols (`CatalogSource`,
   `RobotsSource`), so unit tests pass fakes and need no network.
 - Interfaces only parse input and present the returned models.
@@ -32,11 +35,12 @@ strata-cli, console, MCP, SDK  ->  strata-services  ->  strata-fetch  ->  strata
 The workspace is kept because its package boundaries already enforce the dependency direction
 (`strata-core` can't import the fetcher; nothing below the services can import an interface),
 which folders inside one package would only state. The existing job runner (`strata_fetch.jobs`)
-stays where it is; `pull` will wrap it.
+stays where it is; `pull` wraps it.
 
 ## Consequences
 
 - One more package to version; all four move together, from one lockfile.
 - Modules over about 300 lines were split along the same lines: the CDX client, the URL-index
   queries, the site catalog, DuckDB request logging and request records each have their own
-  module under `strata_fetch.cc`; the CLI's printing lives in `strata_cli.output`.
+  module under `strata_fetch.cc`; the CLI's printing lives in `strata_cli.output`, and each
+  group of commands has its own module (`site.py`, `pull.py`).

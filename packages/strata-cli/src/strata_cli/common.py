@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import sys
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
-import httpx
 import typer
 
 from strata_core import logs
@@ -16,7 +12,7 @@ from strata_core.models import (
     IndexChoice,
 )
 from strata_core.settings import Settings
-from strata_fetch.ratelimit import HostGate
+from strata_services.runtime import data_gate, http_client, index_gate, run_sync
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -75,13 +71,6 @@ IndexOpt = Annotated[
 ]
 
 
-def run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
-    # psycopg's async driver needs a selector event loop; Windows defaults to the proactor loop.
-    if sys.platform == "win32":
-        return asyncio.run(coro, loop_factory=asyncio.SelectorEventLoop)
-    return asyncio.run(coro)
-
-
 def load_settings(threads: int | None = None) -> Settings:
     """Settings for this run; also starts its logs, each line tagged with a new ``run_id``."""
     settings = Settings()
@@ -92,20 +81,4 @@ def load_settings(threads: int | None = None) -> Settings:
     return settings
 
 
-def http_client(settings: Settings) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        headers={"User-Agent": settings.user_agent},
-        timeout=settings.http_timeout_s,
-        follow_redirects=False,
-    )
-
-
-def index_gate() -> HostGate:
-    # Matches the seeded policy for index.commoncrawl.org (ADR-003), for commands that run without
-    # the ops database.
-    return HostGate(rate=0.5, burst=1, max_in_flight=1)
-
-
-def data_gate() -> HostGate:
-    # Matches the seeded policy for data.commoncrawl.org (ADR-003).
-    return HostGate(rate=2.0, burst=2, max_in_flight=2)
+__all__ = ["data_gate", "http_client", "index_gate", "run_sync"]

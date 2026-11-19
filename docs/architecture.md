@@ -10,10 +10,13 @@ itself.
 flowchart LR
   subgraph interfaces
     CLI[strata-cli<br/>Typer]
+    SDK[SDK<br/>Strata]
   end
   subgraph strata-services
     PROFILE[profile]
-    WIRING[wiring: adapters from settings]
+    CHANGES[diff, changes]
+    PULL[pull + page normalizer]
+    WIRING[wiring, runtime]
   end
   subgraph strata-fetch
     CAT[site catalog<br/>cc/catalog.py]
@@ -30,9 +33,12 @@ flowchart LR
     OPS[(ops schema<br/>Postgres)]
     LEDGER[budget ledger]
     LAKE[(DuckLake<br/>bronze)]
+    SINKS[sinks: Postgres, SQLite,<br/>DuckDB, Parquet]
   end
-  CLI --> PROFILE & JOBS
+  CLI & SDK --> PROFILE & CHANGES & PULL
   PROFILE --> CAT & ROB
+  CHANGES --> CAT
+  PULL --> JOBS & SINKS
   CAT --> COL --> MAP
   JOBS --> CDX & COL & ROB & FETCH & STORE & OPS & LEDGER & LAKE
   FETCH --> LEDGER
@@ -44,15 +50,17 @@ Crawl or to storage; `strata-services` holds the use cases the interfaces call.
 
 ## Two paths
 
-**Index only (profile, and next diff and changes).** No database. A site's captures in a crawl
+**Index only (profile, diff, changes).** No database. A site's captures in a crawl
 are read once from the Parquet URL index into a site catalog, cached on disk; every later question
 about the site runs on the catalog. The robots.txt evidence comes from the same crawl's
 `robotstxt` subset. Requests are spent from an in-memory budget before they are sent.
 
-**Jobs (run, gate1, and next pull).** Postgres holds the job, its budget ledger, every attempt
+**Jobs (run, gate1, pull).** Postgres holds the job, its budget ledger, every attempt
 and every robots.txt decision. Pages are read by byte range from Common Crawl's WARC files,
 verified, appended to a local part with a write-ahead manifest, sealed into the S3 store, and only
-then written as bronze rows into DuckLake. A dead job resumes from its manifests.
+then written as bronze rows into DuckLake. A dead job resumes from its manifests. `pull` then
+normalizes each selected page (trafilatura main text, title, language, links) and upserts it, with
+its lineage, into the user's own database through a sink.
 
 ## What each request passes through
 

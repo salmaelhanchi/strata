@@ -68,7 +68,7 @@ packages = ["strata_core", "strata_fetch", "strata_services", "strata_cli"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["warcio.*", "boto3.*", "botocore.*", "protego.*", "moto.*"]
+module = ["warcio.*", "boto3.*", "botocore.*", "protego.*", "moto.*", "pandas.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

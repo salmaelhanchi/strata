@@ -18,6 +18,7 @@ from itertools import pairwise
 from pydantic import BaseModel, ConfigDict
 
 from strata_core.models import CaptureRef
+from strata_core.sinks import ChangeRow
 from strata_fetch.cc.attempts import IndexAttempt
 from strata_fetch.cc.catalog import SiteCatalog, url_shape
 from strata_fetch.surt import normalise_domain
@@ -197,3 +198,11 @@ class ChangeService:
             raise ValueError("change rates need at least two crawls")
         loaded, sent = await self._load(normalise_domain(site), crawls)
         return change_rates(loaded, **sent)
+
+
+def change_rows(diff: SiteDiff) -> list[ChangeRow]:
+    """A diff as ``strata_site_changes`` rows (unchanged URLs are not written)."""
+    return [
+        ChangeRow(url=c.url, from_crawl=diff.from_crawl, to_crawl=diff.to_crawl, change=c.change)
+        for c in diff.changes
+    ]

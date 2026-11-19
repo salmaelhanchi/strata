@@ -13,6 +13,7 @@ from typing import Annotated, Any
 import httpx
 import typer
 
+from strata_cli import pull as pull_commands  # noqa: F401 - registers its commands on app
 from strata_cli import site as site_commands  # noqa: F401 - registers its commands on app
 from strata_cli.common import (
     DEFAULT_BUDGET,
@@ -48,7 +49,6 @@ from strata_cli.output import (
 )
 from strata_core import db
 from strata_core.lake import Lake
-from strata_core.ledger import PostgresLedger
 from strata_core.models import (
     CrawlSpec,
     IndexChoice,
@@ -82,6 +82,7 @@ from strata_fetch.jobs import (
 from strata_fetch.lineage import lineage
 from strata_fetch.setup import prepare
 from strata_fetch.surt import normalise_domain
+from strata_services.runtime import engine, resolve
 
 
 # ------------------------------------------------------------------------------------ commands
@@ -277,31 +278,13 @@ def count(
 
 
 async def _resolve(settings: Settings, client: httpx.AsyncClient, crawl: str) -> str:
-    return await resolve_crawl(
-        crawl,
-        client,
-        index_gate(),
-        index_base=settings.cc_index_base,
-        cache_dir=settings.cache_dir,
-    )
+    return await resolve(settings, client, crawl)
 
 
 async def _with_services[T](settings: Settings, body: Callable[[Services], Awaitable[T]]) -> T:
-    """Set up what's missing, open the ops pool, the HTTP client, the lake and the raw store,
-    then run ``body``."""
-    for line in await prepare(settings):
-        typer.echo(line, err=True)
-    async with db.make_pool(settings.ops_dsn) as pool, http_client(settings) as client:
-        with Lake.open(settings) as lake:
-            services = Services(
-                settings=settings,
-                ops=OpsStore(pool),
-                ledger=PostgresLedger(pool),
-                lake=lake,
-                client=client,
-                store=open_store(settings),
-            )
-            return await body(services)
+    """Set up what's missing, open the engine, then run ``body``."""
+    async with engine(settings, on_setup=lambda line: typer.echo(line, err=True)) as services:
+        return await body(services)
 
 
 async def _run_spec(settings: Settings, spec: CrawlSpec) -> RunReport:

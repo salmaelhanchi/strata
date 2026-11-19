@@ -20,6 +20,7 @@ from strata_fetch.gate import Gate1Run
 from strata_fetch.lineage import LineageReport
 from strata_services.changes import Change, ChangeRates, SiteDiff
 from strata_services.profile import SiteProfile
+from strata_services.pull import PullReport
 
 
 def shard_progress(done: int, total: int) -> None:
@@ -273,3 +274,18 @@ def print_rates(r: ChangeRates, *, top: int = 8) -> None:
 
 def _footers(n: int) -> str:
     return f" (+{n} one-time footer reads for a crawl's shard map)" if n else ""
+
+
+def print_pull(p: PullReport) -> None:
+    if p.run is not None:
+        print_report(p.run)
+    else:
+        typer.echo(f"job {p.job_id}: already succeeded; nothing fetched")
+    langs = ", ".join(f"{k} {v:,}" for k, v in list(p.languages.items())[:4]) or "-"
+    typer.echo(
+        f"pulled {p.written:,} of {p.selected:,} selected page(s) into {p.sink} (table"
+        f" strata_pages); main text found for {p.with_text:,}; languages: {langs}"
+    )
+    typer.echo(f"  normalizer {p.normalizer_version}; `strata lineage CAPTURE_ID` traces any row")
+    if p.state.value != "succeeded":
+        typer.echo("  the job did not finish: run the same command again to continue it")
