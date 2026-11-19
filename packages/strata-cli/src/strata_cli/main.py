@@ -14,6 +14,7 @@ import httpx
 import typer
 
 from strata_cli import pull as pull_commands  # noqa: F401 - registers its commands on app
+from strata_cli import serve as serve_commands  # noqa: F401 - registers its commands on app
 from strata_cli import site as site_commands  # noqa: F401 - registers its commands on app
 from strata_cli.common import (
     DEFAULT_BUDGET,

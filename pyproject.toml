@@ -5,7 +5,7 @@ description = "Strata: a Common Crawl toolkit for scraping projects (workspace r
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-dependencies = ["strata-core", "strata-fetch", "strata-services", "strata-cli"]
+dependencies = ["strata-core", "strata-fetch", "strata-services", "strata-console", "strata-cli"]
 
 [tool.uv]
 package = false
@@ -17,6 +17,7 @@ members = ["packages/*"]
 strata-core = { workspace = true }
 strata-fetch = { workspace = true }
 strata-services = { workspace = true }
+strata-console = { workspace = true }
 strata-cli = { workspace = true }
 
 [dependency-groups]
@@ -40,6 +41,7 @@ src = [
     "packages/strata-core/src",
     "packages/strata-fetch/src",
     "packages/strata-services/src",
+    "packages/strata-console/src",
     "packages/strata-cli/src",
     "tests",
 ]
@@ -62,9 +64,10 @@ mypy_path = [
     "packages/strata-core/src",
     "packages/strata-fetch/src",
     "packages/strata-services/src",
+    "packages/strata-console/src",
     "packages/strata-cli/src",
 ]
-packages = ["strata_core", "strata_fetch", "strata_services", "strata_cli"]
+packages = ["strata_core", "strata_fetch", "strata_services", "strata_console", "strata_cli"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]

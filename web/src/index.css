@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-paper text-ink antialiased dark:bg-[#161614] dark:text-[#ecebe6];
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.card {
+  @apply rounded-xl border border-paper-line bg-paper-card dark:border-[#2d2c28] dark:bg-[#1e1e1b];
+}
+.muted {
+  @apply text-ink-soft dark:text-[#9c9a92];
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}

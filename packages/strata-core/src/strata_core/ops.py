@@ -13,6 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 from strata_core.models import (
     Attempt,
     CrawlSpec,
+    JobListItem,
     JobRecord,
     JobState,
     JobSummary,
@@ -258,6 +259,37 @@ class OpsStore:
                 (limit,),
             )
             return [(str(j), JobState(s), r, c, h) for j, s, r, c, h in await cur.fetchall()]
+
+    async def list_jobs(self, limit: int = 20, before: str | None = None) -> list[JobListItem]:
+        """Newest first, ``limit`` at a time; ``before`` is the last job id of the previous page
+        (job ids start with their creation time, so they sort like it)."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT j.job_id, j.state, j.stop_reason,"
+                " coalesce(j.spec->>'domain', (SELECT string_agg(t->>'site', ', ')"
+                "   FROM jsonb_array_elements(j.spec->'targets') t)),"
+                " j.spec->>'crawl', j.budget_cap, coalesce(l.spent, 0), j.created_at,"
+                " j.heartbeat_at"
+                " FROM ops.jobs j LEFT JOIN ops.budget_ledger l"
+                " ON l.job_id = j.job_id AND l.host = '*'"
+                " WHERE %s::text IS NULL OR j.job_id < %s"
+                " ORDER BY j.job_id DESC LIMIT %s",
+                (before, before, limit),
+            )
+            return [
+                JobListItem(
+                    job_id=j,
+                    state=JobState(s),
+                    stop_reason=r,
+                    domain=d,
+                    crawl=c,
+                    budget_cap=cap,
+                    budget_spent=spent,
+                    created_at=created,
+                    heartbeat_at=beat,
+                )
+                for j, s, r, d, c, cap, spent, created, beat in await cur.fetchall()
+            ]
 
     async def selected_capture_ids(self, job_id: str) -> list[str]:
         async with self._pool.connection() as conn:

@@ -12,7 +12,10 @@ projects, not a scraper.
 > every row, and a **Python SDK** all work. **Gate 1 passed**: one targets file turns two public
 > documentation sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for
 > every page, raw WARC parts and lake files on an S3-compatible store, a run that survives being
-> killed, and one query that proves every row. A web console and an MCP server come next.
+> killed, and one query that proves every row. The **web console** puts all of it in a browser;
+> an MCP server comes next.
+
+![The console: a site's profile, its changes between crawls, a pull with live progress, and one row's lineage](docs/media/console.gif)
 
 ## Before you scrape: profile, diff, changes
 
@@ -149,6 +152,31 @@ Run against the pages above, it returned five titled pages without fetching any 
 already in the lake), and `diff` compared peps.python.org's two newest crawls from the cached
 catalogs: 198 added, 167 removed, 3 changed, 12 the same, 0 requests. `profile` and `diff` need no
 database; `pages` runs a pull job, so it needs Strata's ops Postgres like the CLI.
+
+## The console
+
+```powershell
+make web                 # once: builds the React app into the console package (npm ci, vite build)
+uv run strata console    # http://127.0.0.1:8040
+```
+
+One process serves the web app, the REST API it uses (`/v1`, documented in
+[docs/api.md](docs/api.md) and at `/docs`) and Prometheus metrics at `/metrics`. The GIF above is
+a real session against `CC-MAIN-2026-43`: rfc-editor.org's profile and changes come from the
+cached site catalogs (0 requests), the pull of six RFC pages fetched three of them from Common
+Crawl (three requests) and reused three already in the lake, and the row it opens traces to
+Common Crawl's WARC range and to Strata's copy on RustFS, with both digests re-checked.
+
+- **Pulls run as jobs in the background**; the page follows them over Server-Sent Events (the
+  same numbers `strata report` shows, once a second) and lists the pages when they land.
+- **Lists page with an opaque cursor** (jobs, pages, changed URLs), so a page stays stable while
+  new rows arrive. **Errors are `application/problem+json`**: an index that is down is a 503 with
+  `Retry-After`, a budget that can't pay is a 402, a pattern RE2 rejects is a 422.
+- **One host gate per Common Crawl host for the whole process**: two tabs profiling at once still
+  send at most the policy's rate.
+- React 18 + TypeScript + Vite + Tailwind, TanStack Query for server state, Zustand for the little
+  client state there is; FastAPI serves the build, so there is one origin and one port
+  ([ADR-008](docs/adr/008-console.md)).
 
 ## Gate 1 and the job engine
 
@@ -326,6 +354,7 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | Command | What it does |
 | --- | --- |
 | `strata crawls` | Newest Common Crawl crawl ids (cached for a day) |
+| `strata console [--port P]` | The web console, the REST API under `/v1` and `/metrics` on one port |
 | `strata profile SITE [--crawls N] [--html FILE]` | Pages per crawl, URL shapes, statuses, MIME types, languages, hosts, path depth and robots.txt (rules, sitemaps, what it allows of each shape), from the index only; an HTML report on request; needs no database |
 | `strata diff SITE [--from A] [--to B] [--into TARGET]` | Added, removed and changed pages between two crawls, from the index's payload digests; no page fetched; needs no database |
 | `strata pull SITE --into TARGET [--pattern R] [--limit N]` | A job (budget, robots.txt, verified records, crash-resume), then title, main text, language and links with lineage, upserted into `strata_pages` in Postgres, SQLite, DuckDB or Parquet |
@@ -401,7 +430,9 @@ packages/
                   jobs and resume, documents, gate
   strata-services/ use cases every interface calls: profile, diff, changes, pull; the page
                   normalizer; the SDK (`Strata`); their wiring
+  strata-console/ FastAPI: the REST API (/v1), pull runs over SSE, /metrics, the built web app
   strata-cli/     Typer CLI: parses, calls a service or a job, prints
+web/              the console's React app (Vite, TypeScript, Tailwind, TanStack Query, Zustand)
 tests/            unit, integration (Postgres, DuckLake, S3, crash-resume), fake Common Crawl
 deploy/           docker compose (Postgres 16, RustFS), the CLI's Dockerfile; spike/ checks
                   S3-compatible stores (ADR-005)
@@ -421,6 +452,7 @@ docs/progress/    weekly progress logs
 - [ADR-005: Object storage after MinIO](docs/adr/005-object-storage.md) (RustFS)
 - [ADR-006: robots.txt verdicts](docs/adr/006-robots-verdicts.md)
 - [ADR-007: Code layout: a uv workspace, with the use cases in their own package](docs/adr/007-code-layout.md)
+- [ADR-008: The console: FastAPI and a React single-page app](docs/adr/008-console.md)
 - [Common Crawl caveats and bottlenecks](docs/common-crawl.md)
 
 ## Patterns this code is built on

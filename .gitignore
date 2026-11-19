@@ -20,3 +20,8 @@ build/
 # private handoff files: never commit
 CLAUDE.md
 HANDOFF.md
+
+# web app: dependencies and the build FastAPI serves (make web)
+web/node_modules/
+web/*.tsbuildinfo
+packages/strata-console/src/strata_console/static/

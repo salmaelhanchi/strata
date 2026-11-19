@@ -246,6 +246,20 @@ class JobRecord(BaseModel):
     storage: dict[str, str] | None  # None for jobs from before migration 005
 
 
+class JobListItem(_Frozen):
+    """One line of the job list."""
+
+    job_id: str
+    state: JobState
+    stop_reason: str | None
+    domain: str | None
+    crawl: str | None
+    budget_cap: int
+    budget_spent: int
+    created_at: datetime
+    heartbeat_at: datetime | None
+
+
 class JobSummary(_Frozen):
     """What ``strata report`` shows for a finished or running job, rebuilt from the databases."""
 

@@ -9,7 +9,7 @@ LIMIT ?= 20
 BUDGET ?= 150
 TEST_PG_DSN ?= postgresql://strata:strata@localhost:5432/strata_ops
 
-.PHONY: dev up down migrate lint check test demo clean
+.PHONY: dev up down migrate lint check test demo web console clean
 
 dev: up
 	uv sync
@@ -37,5 +37,12 @@ test:
 demo: up
 	uv run strata demo --domain $(DOMAIN) --crawl $(CRAWL) --limit $(LIMIT) --budget $(BUDGET)
 
+web:
+	cd web && npm ci && npm run build
+
+console: web
+	uv run strata console
+
 clean:
-	rm -rf data .pytest_cache .mypy_cache .ruff_cache .hypothesis
+	rm -rf data .pytest_cache .mypy_cache .ruff_cache .hypothesis web/node_modules
+	rm -rf packages/strata-console/src/strata_console/static

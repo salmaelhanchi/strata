@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # Logs on stderr (strata_core.logs): debug, info, warning or error; console or json lines
     log_level: Literal["debug", "info", "warning", "error"] = "warning"
     log_format: Literal["console", "json"] = "console"
+    # The console keeps the pages it pulls here (a DuckDB file with a strata_pages table)
+    console_db: Path = Path("data/console.duckdb")
 
     @property
     def version(self) -> str:

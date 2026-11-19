@@ -9,3 +9,5 @@ data
 .hypothesis
 CLAUDE.md
 HANDOFF.md
+web/node_modules
+packages/strata-console/src/strata_console/static

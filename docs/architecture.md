@@ -11,6 +11,7 @@ flowchart LR
   subgraph interfaces
     CLI[strata-cli<br/>Typer]
     SDK[SDK<br/>Strata]
+    CON[strata-console<br/>FastAPI + React]
   end
   subgraph strata-services
     PROFILE[profile]
@@ -35,7 +36,7 @@ flowchart LR
     LAKE[(DuckLake<br/>bronze)]
     SINKS[sinks: Postgres, SQLite,<br/>DuckDB, Parquet]
   end
-  CLI & SDK --> PROFILE & CHANGES & PULL
+  CLI & SDK & CON --> PROFILE & CHANGES & PULL
   PROFILE --> CAT & ROB
   CHANGES --> CAT
   PULL --> JOBS & SINKS
@@ -82,3 +83,4 @@ its lineage, into the user's own database through a sink.
 - [ADR-005](adr/005-object-storage.md) Object storage (RustFS)
 - [ADR-006](adr/006-robots-verdicts.md) robots.txt verdicts
 - [ADR-007](adr/007-code-layout.md) Code layout: a uv workspace, with the use cases in their own package
+- [ADR-008](adr/008-console.md) The console: FastAPI and a React single-page app
