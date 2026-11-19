@@ -112,6 +112,14 @@ Status of this Memo</pre>"""
     assert normalize(capture(), record("<h1>Only <i>a</i> heading</h1>")).title == "Only a heading"
 
 
+def test_only_the_first_title_names_the_page() -> None:
+    html = (
+        "<html><head><title>PEP 2 | peps.python.org</title></head><body><svg><title>Dark"
+        " colour scheme</title></svg><p>text</p></body></html>"
+    )
+    assert normalize(capture(), record(html)).title == "PEP 2 | peps.python.org"
+
+
 def test_an_empty_page_still_gives_a_row() -> None:
     row = normalize(capture(), record("<html></html>"))
     assert (row.title, row.main_text, row.lang, row.out_links) == (None, None, None, [])

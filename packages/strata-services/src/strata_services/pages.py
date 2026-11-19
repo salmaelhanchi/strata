@@ -19,7 +19,8 @@ from strata_core.normalize import normalize_space
 from strata_core.sinks import PageRow
 from strata_fetch.documents import html_of
 
-NORMALIZER_VERSION = f"strata-pages/1+trafilatura-{version('trafilatura')}"
+# 2: only the first <title> names the page (SVG icons carry <title> elements of their own)
+NORMALIZER_VERSION = f"strata-pages/2+trafilatura-{version('trafilatura')}"
 
 
 class _Head(HTMLParser):
@@ -32,6 +33,7 @@ class _Head(HTMLParser):
         self.links: dict[str, None] = {}  # ordered set
         self.headings: list[str] = []
         self._in_title = False
+        self._title_done = False
         self._heading: tuple[str, int] | None = None  # (tag, nesting) while inside a top heading
         self._buf: list[str] = []
 
@@ -43,7 +45,7 @@ class _Head(HTMLParser):
             self._heading, self._buf = (tag, 1), []
         if tag == "html" and a.get("lang"):
             self.lang = (a["lang"] or "").strip().lower() or None
-        elif tag == "title":
+        elif tag == "title" and not self._title_done:
             self._in_title = True
         elif tag == "base" and a.get("href"):
             self.base = urljoin(self.base, a["href"] or "")
@@ -53,8 +55,8 @@ class _Head(HTMLParser):
             self._link(a["href"] or "")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "title":
-            self._in_title = False
+        if tag == "title" and self._in_title:
+            self._in_title, self._title_done = False, True
         if self._heading is not None and tag == self._heading[0]:
             depth = self._heading[1] - 1
             self._heading = (tag, depth) if depth else None
