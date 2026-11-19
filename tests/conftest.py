@@ -22,12 +22,18 @@ from typing import Any
 import duckdb
 import psycopg
 import pytest
+from hypothesis import HealthCheck, settings
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 from strata_core.db import migrate
 from strata_core.settings import Settings
+
+# Property tests check properties, not speed: on a busy machine (the whole suite, a CI runner) one
+# slow draw tripped the "input generation is slow" health check. Timing checks are off.
+settings.register_profile("strata", deadline=None, suppress_health_check=[HealthCheck.too_slow])
+settings.load_profile("strata")
 
 if sys.platform == "win32":
 
