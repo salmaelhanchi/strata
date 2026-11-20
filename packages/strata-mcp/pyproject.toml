@@ -1,0 +1,24 @@
+[project]
+name = "strata-mcp"
+version = "0.1.0"
+description = "Strata MCP server: profile, diff, pull and trace as tools for AI agents"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "strata-core",
+    "strata-fetch",
+    "strata-services",
+    "mcp>=1.20",
+]
+
+[tool.uv.sources]
+strata-core = { workspace = true }
+strata-fetch = { workspace = true }
+strata-services = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strata_mcp"]

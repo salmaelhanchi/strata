@@ -9,6 +9,7 @@ dependencies = [
     "strata-fetch",
     "strata-services",
     "strata-console",
+    "strata-mcp",
     "typer>=0.15",
 ]
 
@@ -20,6 +21,7 @@ strata-core = { workspace = true }
 strata-fetch = { workspace = true }
 strata-services = { workspace = true }
 strata-console = { workspace = true }
+strata-mcp = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

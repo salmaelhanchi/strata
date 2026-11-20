@@ -30,7 +30,9 @@ strata-cli, console, MCP, SDK  ->  strata-services  ->  strata-fetch  ->  strata
   stores, behind one protocol (`write_pages`, `write_changes`).
 - A service receives its adapters through its constructor as small protocols (`CatalogSource`,
   `RobotsSource`), so unit tests pass fakes and need no network.
-- Interfaces only parse input and present the returned models.
+- Interfaces only parse input and present the returned models: the CLI prints them, the console
+  (`strata-console`) serves them as JSON, the MCP server (`strata-mcp`) turns them into compact
+  digests for an agent's context.
 
 The workspace is kept because its package boundaries already enforce the dependency direction
 (`strata-core` can't import the fetcher; nothing below the services can import an interface),

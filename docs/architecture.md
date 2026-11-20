@@ -12,6 +12,7 @@ flowchart LR
     CLI[strata-cli<br/>Typer]
     SDK[SDK<br/>Strata]
     CON[strata-console<br/>FastAPI + React]
+    MCP[strata-mcp<br/>MCP tools]
   end
   subgraph strata-services
     PROFILE[profile]
@@ -36,7 +37,7 @@ flowchart LR
     LAKE[(DuckLake<br/>bronze)]
     SINKS[sinks: Postgres, SQLite,<br/>DuckDB, Parquet]
   end
-  CLI & SDK & CON --> PROFILE & CHANGES & PULL
+  CLI & SDK & CON & MCP --> PROFILE & CHANGES & PULL
   PROFILE --> CAT & ROB
   CHANGES --> CAT
   PULL --> JOBS & SINKS

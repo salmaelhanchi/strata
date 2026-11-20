@@ -12,8 +12,8 @@ projects, not a scraper.
 > every row, and a **Python SDK** all work. **Gate 1 passed**: one targets file turns two public
 > documentation sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for
 > every page, raw WARC parts and lake files on an S3-compatible store, a run that survives being
-> killed, and one query that proves every row. The **web console** puts all of it in a browser;
-> an MCP server comes next.
+> killed, and one query that proves every row. The **web console** puts all of it in a browser,
+> and the **MCP server** gives it to AI agents.
 
 ![The console: a site's profile, its changes between crawls, a pull with live progress, and one row's lineage](docs/media/console.gif)
 
@@ -177,6 +177,36 @@ Common Crawl's WARC range and to Strata's copy on RustFS, with both digests re-c
 - React 18 + TypeScript + Vite + Tailwind, TanStack Query for server state, Zustand for the little
   client state there is; FastAPI serves the build, so there is one origin and one port
   ([ADR-008](docs/adr/008-console.md)).
+
+## For AI agents: `strata mcp`
+
+The same services as MCP tools, over stdio. Add Strata to an MCP host (Claude Desktop, Claude
+Code, an IDE) with:
+
+```json
+{
+  "mcpServers": {
+    "strata": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/strata", "run", "strata", "mcp"]
+    }
+  }
+}
+```
+
+| Tool | What the agent gets |
+| --- | --- |
+| `profile_site(site, crawls, budget)` | Pages per crawl, the largest URL shapes and what robots.txt allows of each, statuses, languages, hosts, the robots.txt rules that apply; no page fetched |
+| `diff_site(site, from_crawl, to_crawl, budget)` | Added, removed, changed and unchanged counts, per URL shape, with example URLs of each kind; no page fetched |
+| `change_rates(site, crawls, budget)` | Which URL shapes change between crawls (re-scrape them) and which never do (scrape once) |
+| `pull_pages(site, pattern, limit, crawl, budget, into)` | A job: budget first, robots.txt first, verified records; titles, excerpts and a `capture_id` per page |
+| `trace_row(capture_id)` | Common Crawl's WARC file and range, Strata's copy, and the checks that tie them |
+
+Answers are compact digests sized for a model's context, each saying what it cost in requests.
+The read-only tools are annotated as such; failures come back as tool errors the agent can act
+on ("call again with a larger budget"). [A real session](docs/examples/mcp-session.md): the MCP
+SDK's client started `strata mcp`, then profiled, diffed and asked for the change rates of
+rfc-editor.org in one conversation, in 1.0, 0.4 and 0.4 seconds from the cached catalogs.
 
 ## Gate 1 and the job engine
 
@@ -354,6 +384,7 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | Command | What it does |
 | --- | --- |
 | `strata crawls` | Newest Common Crawl crawl ids (cached for a day) |
+| `strata mcp` | The MCP server over stdio: `profile_site`, `diff_site`, `change_rates`, `pull_pages`, `trace_row` |
 | `strata console [--port P]` | The web console, the REST API under `/v1` and `/metrics` on one port |
 | `strata profile SITE [--crawls N] [--html FILE]` | Pages per crawl, URL shapes, statuses, MIME types, languages, hosts, path depth and robots.txt (rules, sitemaps, what it allows of each shape), from the index only; an HTML report on request; needs no database |
 | `strata diff SITE [--from A] [--to B] [--into TARGET]` | Added, removed and changed pages between two crawls, from the index's payload digests; no page fetched; needs no database |
@@ -431,6 +462,7 @@ packages/
   strata-services/ use cases every interface calls: profile, diff, changes, pull; the page
                   normalizer; the SDK (`Strata`); their wiring
   strata-console/ FastAPI: the REST API (/v1), pull runs over SSE, /metrics, the built web app
+  strata-mcp/     the MCP server: the services as tools for AI agents, with compact digests
   strata-cli/     Typer CLI: parses, calls a service or a job, prints
 web/              the console's React app (Vite, TypeScript, Tailwind, TanStack Query, Zustand)
 tests/            unit, integration (Postgres, DuckLake, S3, crash-resume), fake Common Crawl
