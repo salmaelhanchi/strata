@@ -107,7 +107,10 @@ def pg_server() -> Iterator[str]:
             "start",
         ],
         check=True,
-        capture_output=True,
+        # Not captured: the server pg_ctl starts inherits these handles and keeps them open, so
+        # on Windows reading a captured pipe to its end never returns. It logs to server.log.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         **run_as,
     )
     try:
