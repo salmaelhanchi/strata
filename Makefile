@@ -9,7 +9,7 @@ LIMIT ?= 20
 BUDGET ?= 150
 TEST_PG_DSN ?= postgresql://strata:strata@localhost:5432/strata_ops
 
-.PHONY: dev up down migrate lint check test demo web console clean
+.PHONY: dev up down migrate lint check test demo web console proto clean
 
 dev: up
 	uv sync
@@ -42,6 +42,11 @@ web:
 
 console: web
 	uv run strata console
+
+# The fetch pool's messages, from pool.proto (ADR-009)
+proto:
+	cd packages/strata-pool/src && uv run python -m grpc_tools.protoc -I . --python_out=. \
+		--pyi_out=. strata_pool/proto/pool.proto
 
 clean:
 	rm -rf data .pytest_cache .mypy_cache .ruff_cache .hypothesis web/node_modules

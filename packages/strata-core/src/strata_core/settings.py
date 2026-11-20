@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     log_format: Literal["console", "json"] = "console"
     # The console keeps the pages it pulls here (a DuckDB file with a strata_pages table)
     console_db: Path = Path("data/console.duckdb")
+    # The fetch pool (ADR-009): where `strata scheduler` listens, where `strata worker` connects,
+    # how long a worker may hold a lease before its page goes to another, and how many leases a
+    # worker holds at once (the data host's policy still caps the total).
+    pool_listen: str = "127.0.0.1:50061"
+    pool_scheduler: str = "127.0.0.1:50061"
+    lease_ttl_s: float = Field(default=60.0, gt=0)
+    worker_slots: int = Field(default=1, ge=1, le=16)
+    pool_metrics_port: int = Field(default=9461, ge=0, le=65535)  # 0 turns /metrics off
 
     @property
     def version(self) -> str:

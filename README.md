@@ -13,7 +13,8 @@ projects, not a scraper.
 > documentation sites into 1,000 verified Common Crawl captures, with a robots.txt verdict for
 > every page, raw WARC parts and lake files on an S3-compatible store, a run that survives being
 > killed, and one query that proves every row. The **web console** puts all of it in a browser,
-> and the **MCP server** gives it to AI agents.
+> the **MCP server** gives it to AI agents, and the **fetch pool** spreads a job's page requests
+> over worker processes, with the budget and the host's rate limit kept in one scheduler.
 
 ![The console: a site's profile, its changes between crawls, a pull with live progress, and one row's lineage](docs/media/console.gif)
 
@@ -208,6 +209,64 @@ on ("call again with a larger budget"). [A real session](docs/examples/mcp-sessi
 SDK's client started `strata mcp`, then profiled, diffed and asked for the change rates of
 rfc-editor.org in one conversation, in 1.0, 0.4 and 0.4 seconds from the cached catalogs.
 
+## A fetch pool: `strata scheduler` and `strata worker`
+
+A job's page requests can go to worker processes on any number of machines. The scheduler runs
+the job as `strata run` would (discovery, robots.txt verdicts, selection, the bronze rows) and
+leases each page request to a worker over one gRPC stream per worker
+([pool.proto](packages/strata-pool/src/strata_pool/proto/pool.proto), [ADR-009](docs/adr/009-fetch-pool.md)).
+
+```mermaid
+sequenceDiagram
+  participant W as worker
+  participant S as scheduler
+  participant PG as Postgres (work_items, ledger)
+  W->>S: Hello(worker_id, slots)
+  S->>PG: claim next page (new lease id)
+  S->>S: host's token bucket, in-flight cap, 429 pause
+  S->>PG: reserve 1 request in the budget
+  S->>W: Lease(lease_id, page, ttl)
+  W->>W: byte-range read, verify, append + manifest, seal part
+  W->>S: Result(lease_id, outcome, where the bytes are)
+  S->>PG: fetched (only if lease_id is still current)
+  S->>S: bronze row into the lake, then stored
+```
+
+- **Politeness and budget stay central.** A lease is granted only after an in-flight slot, a
+  token from the data host's bucket and a reserved request: three workers still send at most the
+  policy's 2 requests/s, and a 429 seen by one worker pauses all of them.
+- **A dead worker's page is leased again at once.** Its stream closing returns its leases to the
+  queue; a lease nobody answers within `STRATA_LEASE_TTL_S` goes back too. Both count as a failed,
+  charged attempt, so the ledger and the attempt log still agree.
+- **No duplicates.** Every lease has its own id, and every change to a leased row names it, so a
+  result from a worker presumed dead changes nothing. Rows are keyed by the capture's upstream
+  location, and a worker seals the bytes before it reports.
+
+```powershell
+uv run strata scheduler targets.toml          # terminal 1: the job, gRPC on 127.0.0.1:50061, /metrics on 9461
+uv run strata worker --id w1                  # terminals 2..n
+```
+
+**A real run.** 60 RFC info pages from CC-MAIN-2026-43, a scheduler and three worker processes,
+and `w2` killed with `Stop-Process -Force` 16 s in, while it held a lease:
+
+```text
+pool.lease_taken_back  url=https://www.rfc-editor.org/info/rfc4350/ why='worker w2 disconnected'
+job job_20261120T114337Z_a05e3b78: succeeded
+  outcomes: ok=60; rows written: 60
+  budget: 62/120; rate-limited attempts: 0
+  stored 4034097 B; run took 35.1 s, pages fetched at 1.775 req/s
+worker w1: 28 lease(s); ok 28; rejected 0
+worker w3: 28 lease(s); ok 28; rejected 0
+```
+
+`rfc4350` shows attempt 1 `retryable_error` ("worker w2 disconnected") and attempt 2 `ok` on
+another worker. The 62 requests are the robots.txt record, 60 pages and the one lost to the kill,
+equal to the charged attempts. The lake holds 60 rows for 60 distinct captures, all 60 work items
+are `stored`, and `strata lineage` traces a row to the part worker `w3` sealed, digests matching.
+The pace stayed under the data host's 2 requests/s with three workers, which is the point: the
+pool buys resilience and spreads the storage work; against Common Crawl it doesn't buy speed.
+
 ## Gate 1 and the job engine
 
 How the packages and the two paths (index only, jobs) fit together:
@@ -394,6 +453,8 @@ the stored bytes are the same 8,358 bytes Common Crawl serves.
 | `strata discover --domain D [--crawl C] [--limit N] [--index auto\|cdx\|columnar]` | One newest capture per distinct page, with any failed index request listed; needs no database |
 | `strata run cc --domain D [--pattern R] [--limit N] [--budget B] [--index ...]` | Fetch one site into the bronze table |
 | `strata gate1 run TARGETS.toml [--oracle DIR]` | Run a targets file (several sites, a pattern and a page count each) to the end, or continue it after a crash; then normalize and prove every row |
+| `strata scheduler TARGETS.toml [--listen H:P]` | Run a targets file's job with its page requests leased to workers over gRPC; budget, rate limit and bronze rows stay here; run it again to continue |
+| `strata worker [--scheduler H:P] [--id NAME] [--slots N]` | Fetch leased pages, seal them into the raw store, report; exits when the scheduler's job ends |
 | `strata jobs` / `strata resume JOB_ID [--force]` | Newest jobs and their state / continue a `run cc` job that died or stopped (on the storage it started with) |
 | `strata report JOB_ID` | Attempts per outcome, budget used, the busiest second per host, robots verdicts, rows in the lake |
 | `strata lineage CAPTURE_ID` | Upstream pointer, our copy, digests, archived response headers |
@@ -463,6 +524,8 @@ packages/
                   normalizer; the SDK (`Strata`); their wiring
   strata-console/ FastAPI: the REST API (/v1), pull runs over SSE, /metrics, the built web app
   strata-mcp/     the MCP server: the services as tools for AI agents, with compact digests
+  strata-pool/    the fetch pool: pool.proto, the work queue (ops.work_items), the scheduler's
+                  dispatcher and gRPC service, the worker
   strata-cli/     Typer CLI: parses, calls a service or a job, prints
 web/              the console's React app (Vite, TypeScript, Tailwind, TanStack Query, Zustand)
 tests/            unit, integration (Postgres, DuckLake, S3, crash-resume), fake Common Crawl
@@ -485,13 +548,16 @@ docs/progress/    weekly progress logs
 - [ADR-006: robots.txt verdicts](docs/adr/006-robots-verdicts.md)
 - [ADR-007: Code layout: a uv workspace, with the use cases in their own package](docs/adr/007-code-layout.md)
 - [ADR-008: The console: FastAPI and a React single-page app](docs/adr/008-console.md)
+- [ADR-009: A fetch pool: a gRPC scheduler leases pages to workers](docs/adr/009-fetch-pool.md)
 - [Common Crawl caveats and bottlenecks](docs/common-crawl.md)
 
 ## Patterns this code is built on
 
 - **A status state machine per item, enforced in SQL.** A job's state and every attempt's outcome
   are `CHECK`-constrained columns; the ledger's `CHECK (spent <= cap)` makes overspending a
-  database error, not a bug to notice later.
+  database error, not a bug to notice later. The pool's `work_items` (pending, leased, fetched,
+  stored, empty, failed) also checks that only a leased row holds a lease, and every change to it
+  is fenced by that lease's id.
 - **Idempotent reruns.** Capture ids are hashes of the upstream location (crawl, WARC file,
   offset), so a rerun or a resume reuses what is stored and inserts nothing twice.
 - **Budget before request.** Every request, retries and DuckDB's own included, is reserved

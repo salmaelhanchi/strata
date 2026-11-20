@@ -1,0 +1,24 @@
+[project]
+name = "strata-pool"
+version = "0.1.0"
+description = "Strata fetch pool: a gRPC scheduler that leases pages to workers, politeness kept central"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "strata-core",
+    "strata-fetch",
+    "grpcio>=1.70",
+    "protobuf>=7.35",  # the generated modules check the runtime is at least protoc's version
+    "prometheus-client>=0.21",
+]
+
+[tool.uv.sources]
+strata-core = { workspace = true }
+strata-fetch = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strata_pool"]

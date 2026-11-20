@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from urllib.parse import urlparse
 
@@ -60,6 +60,7 @@ from strata_fetch.cc.index import DiscoveryResult, IndexSource
 from strata_fetch.cc.sources import make_index, make_robots
 from strata_fetch.crash import arm, crashpoint
 from strata_fetch.fetcher import FetchContext, FetchResult, HostBlockedError, fetch_capture
+from strata_fetch.pooled import PagePool
 from strata_fetch.ratelimit import HostGate, Sleep
 from strata_fetch.robots import HostRobots, RobotsLocator, host_robots
 
@@ -77,6 +78,7 @@ class Services:
     sleep: Sleep = asyncio.sleep
     index: IndexSource | None = None  # override the index built from spec.index (tests)
     robots: RobotsLocator | None = None  # override the robots.txt locator (tests)
+    pool: PagePool | None = None  # fetch pages through a worker pool (ADR-009)
 
 
 class ResumeRefusedError(Exception):
@@ -328,18 +330,20 @@ async def _execute(
                         for p in plans
                         for r in p.selected
                     }
+
+                    def decorate(c: Capture) -> Capture:
+                        verdict, robots_id = verdicts[c.url]
+                        return c.model_copy(
+                            update={"policy_verdict": verdict, "robots_capture_id": robots_id}
+                        )
+
                     fetch_started = time.monotonic()
-                    await run.fetch_all(
-                        todo,
-                        ctx,
-                        workers=data_policy.max_in_flight,
-                        decorate=lambda c: c.model_copy(
-                            update={
-                                "policy_verdict": verdicts[c.url][0],
-                                "robots_capture_id": verdicts[c.url][1],
-                            }
-                        ),
-                    )
+                    if svc.pool is not None:
+                        await run.fetch_pooled(svc.pool, job_id, todo, data_policy, decorate)
+                    else:
+                        await run.fetch_all(
+                            todo, ctx, workers=data_policy.max_in_flight, decorate=decorate
+                        )
                     run.fetch_seconds = time.monotonic() - fetch_started
                     short = [
                         f"{p.target.site} {len(p.selected)}/{p.target.pages}"
@@ -609,6 +613,8 @@ class _Run:
         self.stop_reason: str | None = None
         self.stopped = asyncio.Event()
         self._lake_lock = asyncio.Lock()
+        # Told which page rows reached the lake (the pool marks their work done).
+        self.on_stored: Callable[[list[str]], Awaitable[None]] | None = None
 
     def stop(self, reason: str, *, state: JobState = JobState.STOPPED) -> None:
         if self.stop_reason is None:
@@ -658,6 +664,33 @@ class _Run:
             for _ in range(max(1, min(workers, len(refs)))):
                 tg.create_task(worker())
 
+    async def fetch_pooled(
+        self,
+        pool: PagePool,
+        job_id: str,
+        refs: Sequence[CaptureRef],
+        policy: Policy,
+        decorate: Callable[[Capture], Capture],
+    ) -> None:
+        """Pages read by the worker pool. A worker seals a record's bytes before it reports, and
+        the pool's queue holds the row until it is in the lake: no manifest line is needed here."""
+
+        async def stored(ids: list[str]) -> None:
+            await pool.stored(job_id, ids)
+
+        self.on_stored = stored
+        try:
+            async for result in pool.fetch(job_id, refs, policy):
+                if result.capture is not None:
+                    capture = decorate(result.capture)
+                    self.buffer.append(capture)
+                    if self.first_capture_id is None:
+                        self.first_capture_id = capture.capture_id
+                self.results.append(replace(result, body=None))
+                await self.flush()
+        except (BudgetExhaustedError, HostBlockedError) as exc:
+            self.stop(str(exc))
+
     async def flush(self, *, force: bool = False) -> None:
         """Seal the parts holding the buffered rows, then write the rows: never the reverse."""
         async with self._lake_lock:
@@ -674,6 +707,8 @@ class _Run:
                 await asyncio.to_thread(self.lake.insert_captures, robots, "robots")
             if pages:
                 self.rows_written += await asyncio.to_thread(self.lake.insert_captures, pages)
+                if self.on_stored is not None:
+                    await self.on_stored([c.capture_id for c in pages])
             if pages or robots:
                 crashpoint("after_insert")
 

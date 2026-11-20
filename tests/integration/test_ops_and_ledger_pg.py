@@ -45,6 +45,7 @@ async def test_migrate_is_idempotent(pg_dsn: str) -> None:
         "003_request_client",
         "004_resume_and_robots",
         "005_job_storage",
+        "006_work_items",
     ]
     assert second == []
 

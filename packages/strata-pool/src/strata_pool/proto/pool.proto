@@ -1,0 +1,95 @@
+// The contract between the scheduler and its fetch workers (ADR-009).
+//
+// A worker opens one Work stream and keeps it open. It says who it is and how many pages it
+// fetches at once. The scheduler sends a lease whenever one of those slots is free and the host's
+// politeness allows another request; the worker answers every lease with exactly one result. A
+// result for a page that was read reports where the worker sealed its bytes in the raw store: the
+// scheduler writes the bronze row only after that. The scheduler ends the stream when the job has
+// nothing left to lease. Regenerate the Python modules with `make proto`.
+syntax = "proto3";
+
+package strata.pool.v1;
+
+service Scheduler {
+  rpc Work(stream WorkerMessage) returns (stream SchedulerMessage);
+}
+
+message WorkerMessage {
+  oneof body {
+    Hello hello = 1;
+    Result result = 2;
+  }
+}
+
+message SchedulerMessage {
+  oneof body {
+    Lease lease = 1;
+    Ack ack = 2;
+  }
+}
+
+message Hello {
+  string worker_id = 1;
+  uint32 slots = 2;  // leases the worker holds at once
+}
+
+// Where a capture lives upstream: strata_core.models.CaptureRef.
+message PageRef {
+  string crawl = 1;
+  string url = 2;
+  optional string url_surtkey = 3;
+  optional string fetch_time = 4;  // ISO 8601
+  string warc_filename = 5;
+  int64 warc_record_offset = 6;
+  int64 warc_record_length = 7;
+  optional string content_digest = 8;
+  optional string mime = 9;
+  optional int32 status = 10;
+}
+
+// One request the worker may send. The budget for it is already reserved, and the host's rate
+// limiter already granted it: the worker sends it at once, and only once.
+message Lease {
+  string lease_id = 1;  // fencing token: a result is accepted only for the current lease
+  string job_id = 2;
+  PageRef page = 3;
+  uint32 attempt = 4;
+  double ttl_s = 5;  // after this the page is leased to someone else
+  string data_base = 6;  // where the WARC files are, e.g. https://data.commoncrawl.org/
+}
+
+// strata_core.models.Outcome, name for name.
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_OK = 1;
+  OUTCOME_DEFINITIVE_EMPTY = 2;
+  OUTCOME_RETRYABLE_ERROR = 3;
+  OUTCOME_RATE_LIMITED = 4;
+  OUTCOME_BLOCKED = 5;
+}
+
+// A verified record, appended to the worker's part and sealed into the raw store.
+message Stored {
+  string raw_uri = 1;
+  int64 raw_offset = 2;
+  int64 raw_length = 3;
+  string raw_sha256 = 4;
+  int32 http_status = 5;  // the archived response's status
+}
+
+message Result {
+  string lease_id = 1;
+  Outcome outcome = 2;
+  optional int32 http_status = 3;  // the status Common Crawl's server answered with
+  optional double retry_after_s = 4;
+  int64 bytes = 5;
+  optional string error = 6;
+  string started_at = 7;  // ISO 8601
+  int64 elapsed_ms = 8;
+  optional Stored stored = 9;  // set exactly when outcome is OUTCOME_OK
+}
+
+message Ack {
+  string lease_id = 1;
+  bool accepted = 2;  // false: the lease had expired or was given to another worker
+}

@@ -14,6 +14,10 @@ flowchart LR
     CON[strata-console<br/>FastAPI + React]
     MCP[strata-mcp<br/>MCP tools]
   end
+  subgraph strata-pool
+    SCHED[scheduler<br/>leases, gates, budget]
+    WORK[workers<br/>fetch, seal, report]
+  end
   subgraph strata-services
     PROFILE[profile]
     CHANGES[diff, changes]
@@ -44,6 +48,11 @@ flowchart LR
   CAT --> COL --> MAP
   JOBS --> CDX & COL & ROB & FETCH & STORE & OPS & LEDGER & LAKE
   FETCH --> LEDGER
+  CLI --> SCHED
+  JOBS -. page requests .-> SCHED
+  SCHED <== gRPC stream ==> WORK
+  SCHED --> OPS & LEDGER
+  WORK --> STORE
 ```
 
 Dependencies point one way, and the package boundaries enforce it (ADR-007). `strata-core`
@@ -63,6 +72,13 @@ verified, appended to a local part with a write-ahead manifest, sealed into the 
 then written as bronze rows into DuckLake. A dead job resumes from its manifests. `pull` then
 normalizes each selected page (trafilatura main text, title, language, links) and upserts it, with
 its lineage, into the user's own database through a sink.
+
+**Pooled jobs (scheduler, worker).** The same job, with only its page requests leased to worker
+processes over one gRPC stream each (ADR-009). The scheduler owns the work queue
+(`ops.work_items`), the budget and the data host's rate limiter, so a lease is the permission to
+send exactly one request. A worker seals the record into the raw store before it reports; the
+scheduler writes the row. A worker that disconnects, or holds a lease past its TTL, loses it, and a
+late result for a lease that moved on is refused by its fencing token.
 
 ## What each request passes through
 
@@ -85,3 +101,4 @@ its lineage, into the user's own database through a sink.
 - [ADR-006](adr/006-robots-verdicts.md) robots.txt verdicts
 - [ADR-007](adr/007-code-layout.md) Code layout: a uv workspace, with the use cases in their own package
 - [ADR-008](adr/008-console.md) The console: FastAPI and a React single-page app
+- [ADR-009](adr/009-fetch-pool.md) A fetch pool: a gRPC scheduler leases pages to workers

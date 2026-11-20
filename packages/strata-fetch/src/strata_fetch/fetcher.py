@@ -235,7 +235,15 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
                 ref=ref,
                 outcome=Outcome.OK,
                 attempts=attempt,
-                capture=_capture(ref, ctx, blob, body, verified, started_at),
+                capture=capture_row(
+                    ref,
+                    ctx.job_id,
+                    blob,
+                    hashlib.sha256(body).hexdigest(),
+                    verified.http_status,
+                    started_at,
+                    version=ctx.version,
+                ),
                 verified=verified,
                 bytes_stored=len(body),
                 body=body,
@@ -274,19 +282,23 @@ async def fetch_capture(ref: CaptureRef, ctx: FetchContext) -> FetchResult:
     )
 
 
-def _capture(
+def capture_row(
     ref: CaptureRef,
-    ctx: FetchContext,
+    job_id: str,
     blob: BlobRef,
-    body: bytes,
-    verified: VerifiedRecord,
+    raw_sha256: str,
+    http_status: int | None,
     fetched_at: datetime,
+    *,
+    version: str = __version__,
 ) -> Capture:
+    """The bronze row for a verified record stored at ``blob`` (``http_status`` is the archived
+    response's): the same row whether this process or a pool worker read the record."""
     return Capture(
         capture_id=capture_id(
             Source.COMMON_CRAWL, ref.crawl, ref.warc_filename, ref.warc_record_offset
         ),
-        job_id=ctx.job_id,
+        job_id=job_id,
         source=Source.COMMON_CRAWL,
         crawl=ref.crawl,
         url=ref.url,
@@ -300,11 +312,11 @@ def _capture(
         raw_uri=blob.uri,
         raw_offset=blob.offset,
         raw_length=blob.length,
-        raw_sha256=hashlib.sha256(body).hexdigest(),
-        http_status=verified.http_status,
+        raw_sha256=raw_sha256,
+        http_status=http_status,
         mime=ref.mime,
         outcome=Outcome.OK,
         verification=Verification.OK,
         policy_verdict=PolicyVerdict.NOT_EVALUATED,
-        strata_version=ctx.version,
+        strata_version=version,
     )

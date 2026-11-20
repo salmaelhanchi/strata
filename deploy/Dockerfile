@@ -28,6 +28,7 @@ ENV PATH=/app/.venv/bin:$PATH \
     STRATA_LAKE_DATA_PATH=/data/lake
 USER strata
 WORKDIR /data
-EXPOSE 8040
+# 8040: `strata console`; 50061 and 9461: `strata scheduler`'s gRPC port and its /metrics
+EXPOSE 8040 50061 9461
 ENTRYPOINT ["strata"]
 CMD ["--help"]
